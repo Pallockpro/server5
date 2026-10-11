@@ -591,12 +591,84 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
     border:1px solid rgba(255,255,255,.22);
     backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
     opacity:0; transform:translateY(8px); pointer-events:none;
-    transition:opacity .25s ease, transform .3s var(--ease), background .15s, color .15s;
+    transition:opacity .25s ease, transform .3s var(--ease), background .15s, color .15s,
+               bottom .3s var(--ease);
   }
   .skip-btn svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:2.2;
                   stroke-linecap:round; stroke-linejoin:round; }
   .skip-btn.show { opacity:1; transform:none; pointer-events:auto; }
   .skip-btn:hover { background:#fff; color:#111; }
+  /* shift the skip button above the "up next" card when both are visible */
+  .skip-btn.stacked { bottom:calc(206px + var(--sab)); }
+
+  /* ── up-next prompt ──────────────────────────────────────── */
+  .upnext {
+    position:absolute; right:calc(24px + var(--sar));
+    bottom:calc(112px + var(--sab)); z-index:13;
+    display:flex; align-items:center; gap:12px;
+    padding:10px 12px 10px 10px;
+    background:var(--menu-bg);
+    backdrop-filter:blur(20px) saturate(1.3);
+    -webkit-backdrop-filter:blur(20px) saturate(1.3);
+    border:1px solid var(--line); border-radius:12px;
+    box-shadow:0 18px 50px rgba(0,0,0,.55);
+    opacity:0; transform:translateY(10px) scale(.97);
+    pointer-events:none;
+    transform-origin:bottom right;
+    transition:opacity .3s ease, transform .35s var(--ease);
+    max-width:min(440px, calc(100vw - 20px));
+  }
+  .upnext.show { opacity:1; transform:none; pointer-events:auto; }
+  .upnext:hover { border-color:rgba(245,179,36,.35); }
+
+  .un-thumb {
+    position:relative; width:88px; aspect-ratio:16/9; flex-shrink:0;
+    border-radius:8px; overflow:hidden;
+    background-color:#0d0d10;
+    background-size:cover; background-position:center; background-repeat:no-repeat;
+    border:1px solid rgba(255,255,255,.06);
+  }
+  .un-thumb .un-placeholder {
+    position:absolute; inset:0;
+    display:flex; align-items:center; justify-content:center;
+    background:linear-gradient(135deg, #24242c 0%, #16161b 100%);
+    font-size:20px; font-weight:800; color:rgba(255,255,255,.22);
+    letter-spacing:-.5px;
+  }
+  .un-body { min-width:0; flex:1; }
+  .un-label {
+    font-size:10px; font-weight:800; letter-spacing:1.4px;
+    text-transform:uppercase; color:var(--accent);
+    margin-bottom:3px;
+  }
+  .un-title {
+    font-size:13.5px; font-weight:700; line-height:1.3; color:#fff;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .un-meta {
+    font-size:11.5px; color:var(--dim); margin-top:2px; font-weight:500;
+    font-variant-numeric:tabular-nums;
+  }
+  .un-actions { display:flex; align-items:center; gap:4px; flex-shrink:0; }
+  .un-play {
+    display:flex; align-items:center; justify-content:center;
+    width:40px; height:40px; border-radius:10px; border:none; cursor:pointer;
+    background:var(--accent); color:#111;
+    transition:background .15s, transform .15s;
+  }
+  .un-play:hover { background:#ffc83d; }
+  .un-play:active { transform:scale(.94); }
+  .un-play svg { width:20px; height:20px; fill:currentColor; stroke:none; }
+  .un-close {
+    display:flex; align-items:center; justify-content:center;
+    width:32px; height:32px; border-radius:8px;
+    background:transparent; color:rgba(255,255,255,.7);
+    border:1px solid transparent; cursor:pointer;
+    transition:background .15s, color .15s;
+  }
+  .un-close:hover { background:rgba(255,255,255,.1); color:#fff; }
+  .un-close svg { width:16px; height:16px; fill:none; stroke:currentColor;
+                  stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
 
   /* ── controls ────────────────────────────────────────────── */
   .controls {
@@ -904,6 +976,7 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
     .ctrl svg { width:22px; height:22px; }
     .ctrl.play svg { width:26px; height:26px; }
     .skip-btn { right:calc(14px + var(--sar)); bottom:calc(100px + var(--sab)); padding:9px 14px; font-size:13px; }
+    .skip-btn.stacked { bottom:calc(190px + var(--sab)); }
     .vol-slider-wrap { display:none; }
     .toast { bottom:calc(104px + var(--sab)); }
     #btnPip { display:none; }
@@ -918,11 +991,22 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
     .ep-thumb { width:110px; }
     .ep-title { font-size:13px; }
     .ep-desc { -webkit-line-clamp:2; font-size:11.5px; }
+
+    .upnext {
+      right:calc(10px + var(--sar));
+      left:calc(10px + var(--sal));
+      bottom:calc(100px + var(--sab));
+      max-width:none;
+    }
+    .un-thumb { width:80px; }
+    .un-title { font-size:13px; }
   }
   @media (max-width:420px) {
     #btnBack, #btnFwd { display:none; }
     .time .dur, .time .sep { display:none; }
     .ep-thumb { width:96px; }
+    .un-thumb { width:70px; }
+    .un-title { font-size:12.5px; }
   }
 </style>
 </head>
@@ -944,6 +1028,26 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
     <svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
     <span id="skipLabel">Skip Intro</span>
   </button>
+
+  <!-- Up-next prompt (appears ~8s before the end) -->
+  <div class="upnext" id="upnext" role="dialog" aria-live="polite">
+    <div class="un-thumb" id="unThumb">
+      <div class="un-placeholder" id="unPlaceholder">N</div>
+    </div>
+    <div class="un-body">
+      <div class="un-label">Up Next</div>
+      <div class="un-title" id="unTitle">Episode</div>
+      <div class="un-meta" id="unMeta"></div>
+    </div>
+    <div class="un-actions">
+      <button class="un-play" id="unPlay" title="Play next episode" aria-label="Play next episode">
+        <svg viewBox="0 0 24 24"><polygon points="7 4 20 12 7 20 7 4"/></svg>
+      </button>
+      <button class="un-close" id="unClose" title="Dismiss" aria-label="Dismiss">
+        <svg viewBox="0 0 24 24"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+      </button>
+    </div>
+  </div>
 
   <div class="center-flash" id="flash"><svg viewBox="0 0 24 24" id="flashSvg"></svg></div>
 
@@ -1076,6 +1180,8 @@ const btnAudio = $('btnAudio'), btnCc = $('btnCc'), btnSettings = $('btnSettings
 const flash = $('flash'), toastEl = $('toast'), skipBtn = $('skipBtn'), skipLabel = $('skipLabel');
 const sidePanel = $('sidePanel'), spBody = $('spBody'), spSub = $('spSub');
 const panelBackdrop = $('panelBackdrop');
+const upnext = $('upnext'), unThumb = $('unThumb'), unPlaceholder = $('unPlaceholder');
+const unTitle = $('unTitle'), unMeta = $('unMeta'), unPlay = $('unPlay'), unClose = $('unClose');
 
 const IS_TOUCH = (function(){
   return (window.matchMedia && window.matchMedia('(hover:none) and (pointer:coarse)').matches)
@@ -1150,6 +1256,9 @@ async function loadMeta(){
     paintTitle();
     if(totalEps >= 2){
       btnEps.classList.remove('hidden');
+    }
+    if(totalEps > 0 && EPISODE < totalEps){
+      btnNext.classList.remove('hidden');
     }
     spSub.textContent = animeTitle || '';
   }catch(e){ console.warn('[meta]', e.message); }
@@ -1372,6 +1481,122 @@ btnNext.addEventListener('click', ()=>{
   if(totalEps > 0 && EPISODE < totalEps) go(EPISODE + 1, LANG, 0);
 });
 
+/* ══════════════════════════════════════════════════════════
+   UP-NEXT PROMPT
+   Appears ~8 seconds before the end of the episode. Offers to
+   jump straight to the next episode (same audio language).
+   Dismissible per-episode.
+   ══════════════════════════════════════════════════════════ */
+const UPNEXT_SECONDS = 8;
+let upnextShown = false;
+let upnextDismissed = false;
+let upnextNextEp = null;
+
+function _findNextEpInfo(){
+  const nextNum = EPISODE + 1;
+  const info = { number: nextNum, title: '', image: '' };
+  if(epData && Array.isArray(epData.episodes)){
+    const found = epData.episodes.find(e => e.number === nextNum);
+    if(found) Object.assign(info, found);
+  }
+  return info;
+}
+
+function _applyUpnextContent(info){
+  /* thumbnail */
+  unThumb.style.backgroundImage = '';
+  unPlaceholder.style.display = '';
+  unPlaceholder.textContent = String(info.number);
+  if(info.image){
+    unThumb.style.backgroundImage =
+      'url("' + String(info.image).replace(/"/g, '\\"') + '")';
+  }
+  /* title line: "Episode N · Title" or just "Episode N" */
+  unTitle.textContent = info.title
+    ? ('Episode ' + info.number + ' · ' + info.title)
+    : ('Episode ' + info.number);
+}
+
+function _updateUpnextMeta(){
+  const d = video.duration;
+  if(!d || !isFinite(d)) { unMeta.textContent = ''; return; }
+  const remaining = d - video.currentTime;
+  if(remaining <= 0){
+    unMeta.textContent = 'Ready to play';
+    return;
+  }
+  const secs = Math.max(1, Math.ceil(remaining));
+  unMeta.textContent = 'in ' + secs + 's';
+}
+
+function _syncSkipStack(){
+  /* Move the skip button above the up-next card if both visible */
+  if(upnext.classList.contains('show') && skipBtn.classList.contains('show')){
+    skipBtn.classList.add('stacked');
+  } else {
+    skipBtn.classList.remove('stacked');
+  }
+}
+
+function showUpnext(){
+  if(upnextDismissed || upnextShown) return;
+  if(totalEps <= 0 || EPISODE >= totalEps) return;
+
+  upnextNextEp = _findNextEpInfo();
+  _applyUpnextContent(upnextNextEp);
+  _updateUpnextMeta();
+
+  upnext.classList.add('show');
+  upnextShown = true;
+
+  /* If AniZip data hasn't loaded yet, kick off a background fetch so the
+     thumbnail / title get filled in shortly after. */
+  if(!epData){
+    loadEpisodeList().then(()=>{
+      if(!upnextShown) return;
+      const fresh = _findNextEpInfo();
+      _applyUpnextContent(fresh);
+      upnextNextEp = fresh;
+    });
+  }
+
+  _syncSkipStack();
+}
+
+function hideUpnext(){
+  upnext.classList.remove('show');
+  upnextShown = false;
+  skipBtn.classList.remove('stacked');
+}
+
+function checkUpnext(){
+  if(upnextDismissed) return;
+  if(totalEps <= 0 || EPISODE >= totalEps) return;
+  const d = video.duration;
+  if(!d || !isFinite(d)) return;
+  const remaining = d - video.currentTime;
+
+  if(remaining <= UPNEXT_SECONDS){
+    if(!upnextShown) showUpnext();
+    else _updateUpnextMeta();
+  } else if(upnextShown){
+    /* user seeked back past the threshold — retract */
+    hideUpnext();
+  }
+}
+
+unPlay.addEventListener('click', e => {
+  e.stopPropagation();
+  if(totalEps > 0 && EPISODE < totalEps){
+    go(EPISODE + 1, LANG, 0);
+  }
+});
+unClose.addEventListener('click', e => {
+  e.stopPropagation();
+  upnextDismissed = true;
+  hideUpnext();
+});
+
 /* ── play / pause ── */
 function togglePlay(){ if(video.paused) video.play().catch(()=>{}); else video.pause(); }
 function flashIcon(key){
@@ -1422,7 +1647,13 @@ if(IS_TOUCH){
 video.addEventListener('play',  ()=>{ syncPlayIcon(); showControls(); });
 video.addEventListener('pause', ()=>{ syncPlayIcon(); showControls(); });
 video.addEventListener('playing', syncPlayIcon);
-video.addEventListener('ended', syncPlayIcon);
+video.addEventListener('ended', ()=>{
+  syncPlayIcon();
+  /* keep the up-next card visible on the last frame so the user can still click Play */
+  if(!upnextDismissed && totalEps > 0 && EPISODE < totalEps && !upnextShown){
+    showUpnext();
+  }
+});
 
 /* ── seek bar ── */
 function pctFromEvent(e){
@@ -1486,13 +1717,19 @@ function checkSkip(){
   const seg = skipSegments.find(s => t >= s.start && t < s.end);
   if(seg){
     activeSkip = seg; skipLabel.textContent = skipLabelFor(seg.type); skipBtn.classList.add('show');
-  } else { activeSkip = null; skipBtn.classList.remove('show'); }
+    _syncSkipStack();
+  } else {
+    activeSkip = null; skipBtn.classList.remove('show');
+    skipBtn.classList.remove('stacked');
+  }
 }
 video.addEventListener('timeupdate', checkSkip);
+video.addEventListener('timeupdate', checkUpnext);
 skipBtn.addEventListener('click', ()=>{
   if(activeSkip){
     video.currentTime = activeSkip.end;
     skipBtn.classList.remove('show');
+    skipBtn.classList.remove('stacked');
     showToast(skipLabelFor(activeSkip.type) + ' ✓');
     activeSkip = null;
   }
@@ -1900,9 +2137,10 @@ DOCS_TEMPLATE = r"""<!DOCTYPE html>
       <span class="path">/embed/&lt;anilist_id&gt;/&lt;episode&gt;/&lt;sub|dub&gt;</span></div>
     <p class="desc">Self-contained HLS player with custom controls
       (quality, speed, volume, PiP, fullscreen, subtitles), an
-      auto-detected skip-intro/outro button, and a slide-in episode
-      drawer with thumbnails + synopses (via AniZip). Use as an
-      iframe <code>src</code>.</p>
+      auto-detected skip-intro/outro button, a slide-in episode
+      drawer with thumbnails + synopses (via AniZip), and an
+      <b>Up Next</b> prompt that appears 8 seconds before the end of
+      the episode. Use as an iframe <code>src</code>.</p>
     <pre>GET /embed/21/1/sub</pre>
   </div>
 
@@ -1922,10 +2160,10 @@ DOCS_TEMPLATE = r"""<!DOCTYPE html>
   <div class="ep">
     <div class="ep-head"><span class="method get">GET</span>
       <span class="path">/api/episodes/&lt;anilist_id&gt;</span></div>
-    <p class="desc">Episode metadata for the player's side drawer: title,
-      synopsis, and 16:9 thumbnail. Sourced from AniZip
-      (<code>api.ani.zip</code>), which maps AniList IDs to TVDB-backed
-      episode records. Cached 1 hour. Returns an empty
+    <p class="desc">Episode metadata for the player's side drawer and
+      the Up Next card: title, synopsis, and 16:9 thumbnail. Sourced from
+      AniZip (<code>api.ani.zip</code>), which maps AniList IDs to
+      TVDB-backed episode records. Cached 1 hour. Returns an empty
       <code>episodes</code> array if AniZip has no data for the title.</p>
     <pre>{
   <span class="k">"episodes"</span>: [
@@ -2005,7 +2243,7 @@ DOCS_TEMPLATE = r"""<!DOCTYPE html>
     <code>↑</code> / <code>↓</code> — volume ±5%<br>
     <code>M</code> — mute &nbsp;·&nbsp; <code>F</code> — fullscreen
     &nbsp;·&nbsp; <code>P</code> — picture-in-picture<br>
-    <code>E</code> — episodes drawer<br>
+    <code>E</code> — episodes drawer &nbsp;·&nbsp; <code>N</code> — next episode<br>
     <code>Esc</code> — close panels
   </p>
 
@@ -2028,13 +2266,25 @@ DOCS_TEMPLATE = r"""<!DOCTYPE html>
     semi-transparent backdrop closes it, as does <code>Esc</code>.
   </p>
 
+  <h2>Up Next Prompt</h2>
+  <p>
+    When the current episode reaches its final 8 seconds, an
+    <b>Up Next</b> card fades in at the bottom-right of the player showing
+    the next episode's thumbnail, number, and title. Clicking
+    <b>Play</b> jumps straight to the next episode (keeping the current
+    audio language); clicking <b>×</b> dismisses the prompt for the rest of
+    the episode. The card is suppressed on the last episode of a season.
+  </p>
+
   <h2>Skip Times (AniSkip)</h2>
   <p>
     The player automatically fetches intro/outro/recap timestamps from
     <a href="https://api.aniskip.com/api-docs" style="color:#c4a8ff">AniSkip</a>
     once the video's runtime is known. When you reach an intro, outro, or
     recap segment, a <b>Skip</b> button fades in on the right side of the
-    player. Clicking it seeks to the end of the segment.
+    player. Clicking it seeks to the end of the segment. If an outro is
+    overlapping the last 8 seconds, the skip button stacks above the
+    Up Next card so both stay clickable.
   </p>
 
   <footer>ThyAnime · built on MegaPlay + AniList + AniSkip + AniZip · powered by hls.js</footer>
