@@ -9,6 +9,7 @@ Routes:
   /api/resolve/<anilist_id>/<episode>/<sub|dub>
   /api/skip/<anilist_id>/<episode>?length=<seconds>
   /api/anime/<anilist_id>
+  /api/episodes/<anilist_id>
   /api/debug/<anilist_id>/<episode>/<sub|dub>
   /proxy?url=<encoded>
   /__thy  ·  /health  ·  /robots.txt
@@ -63,6 +64,7 @@ PUBLIC_HOSTNAME  = os.environ.get("PUBLIC_HOSTNAME", "api.thyanime.me")
 
 MEGAPLAY_BASE = "https://megaplay.buzz"
 ANISKIP_BASE  = "https://api.aniskip.com"
+ANIZIP_BASE   = "https://api.ani.zip"
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -136,6 +138,85 @@ def get_anilist_media(anilist_id: int) -> Optional[Dict]:
         return r.json().get("data", {}).get("Media")
     except Exception as e:
         print(f"[anilist] {e}")
+        return None
+
+# ─────────────────────── AniZip (episode metadata) ──────────
+def _pick_ep_title(v: Dict) -> str:
+    t = v.get("title")
+    if isinstance(t, dict):
+        for k in ("en", "x-jat", "ja", "romaji", "jp"):
+            if t.get(k):
+                return str(t[k]).strip()
+    if isinstance(t, str) and t.strip():
+        return t.strip()
+    for k in ("name", "episodeName"):
+        if v.get(k):
+            return str(v[k]).strip()
+    return ""
+
+def _pick_ep_summary(v: Dict) -> str:
+    for k in ("summary", "overview", "description", "plot"):
+        s = v.get(k)
+        if isinstance(s, str) and s.strip():
+            return s.strip()
+    return ""
+
+def _pick_ep_image(v: Dict) -> str:
+    for k in ("image", "imageUrl", "thumbnail", "still"):
+        s = v.get(k)
+        if isinstance(s, str) and s.strip():
+            return s.strip()
+    return ""
+
+def get_anizip_episodes(anilist_id: int) -> Optional[Dict]:
+    try:
+        r = requests.get(
+            f"{ANIZIP_BASE}/mappings",
+            params={"anilist_id": anilist_id},
+            timeout=15,
+            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+        )
+        if r.status_code != 200:
+            print(f"[anizip] HTTP {r.status_code}")
+            return None
+        data = r.json()
+        eps = data.get("episodes") or {}
+        out: List[Dict] = []
+        if isinstance(eps, dict):
+            iterable = eps.items()
+        elif isinstance(eps, list):
+            iterable = [(str(i + 1), e) for i, e in enumerate(eps)]
+        else:
+            iterable = []
+        for key, v in iterable:
+            if not isinstance(v, dict):
+                continue
+            try:
+                num = int(v.get("episode") or v.get("number") or key)
+            except (ValueError, TypeError):
+                continue
+            if num <= 0:
+                continue
+            out.append({
+                "number":  num,
+                "title":   _pick_ep_title(v),
+                "summary": _pick_ep_summary(v),
+                "image":   _pick_ep_image(v),
+                "airDate": v.get("airDate") or "",
+                "length":  v.get("length") or v.get("runtime") or 0,
+            })
+        out.sort(key=lambda x: x["number"])
+        # dedupe (AniZip sometimes returns multiple seasons per key)
+        seen = set()
+        deduped = []
+        for e in out:
+            if e["number"] in seen:
+                continue
+            seen.add(e["number"])
+            deduped.append(e)
+        return {"episodes": deduped}
+    except Exception as e:
+        print(f"[anizip] {e}")
         return None
 
 # ─────────────────────── AniSkip ────────────────────────────
@@ -433,8 +514,6 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
           object-fit:contain; }
   video::cue { background:rgba(0,0,0,.65); color:#fff; font-family:inherit; }
 
-  /* ── CSS-based fullscreen fallback (used only if neither the Fullscreen API
-        nor iOS native video fullscreen is available) ── */
   #stage.fake-fs {
     position:fixed !important;
     top:0 !important; left:0 !important; right:0 !important; bottom:0 !important;
@@ -620,7 +699,7 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
   }
   .center-flash svg { width:36px; height:36px; fill:#fff; stroke:none; }
 
-  /* ── popup menus (audio / episodes / captions / settings) ── */
+  /* ── popup menus (audio / captions / settings) ───────────── */
   .menu {
     position:absolute; bottom:calc(84px + var(--sab)); right:calc(22px + var(--sar)); z-index:15;
     width:270px; max-width:calc(100vw - 16px); max-height:min(62vh, 440px); overflow-y:auto;
@@ -657,14 +736,148 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
   .m-item.active .chk { opacity:1; }
   .m-item.disabled { opacity:.45; pointer-events:none; }
 
-  .ep-grid { display:grid; grid-template-columns:repeat(5, 1fr); gap:6px; padding:4px 6px 8px; }
-  .ep {
-    height:38px; border-radius:8px; border:1px solid var(--line); background:rgba(255,255,255,.05);
-    color:#fff; font-size:13px; font-weight:600; cursor:pointer; font-variant-numeric:tabular-nums;
-    transition:background .12s, border-color .12s;
+  /* ── episode side panel ──────────────────────────────────── */
+  .panel-backdrop {
+    position:absolute; inset:0; z-index:19;
+    background:rgba(0,0,0,.45);
+    opacity:0; pointer-events:none;
+    transition:opacity .28s ease;
   }
-  .ep:hover { background:rgba(255,255,255,.14); }
-  .ep.active { background:var(--accent); border-color:var(--accent); color:#111; }
+  .panel-backdrop.open { opacity:1; pointer-events:auto; }
+
+  .side-panel {
+    position:absolute; top:0; right:0; bottom:0; z-index:20;
+    width:420px; max-width:100vw;
+    background:rgba(14,14,16,.97);
+    backdrop-filter:blur(24px) saturate(1.3);
+    -webkit-backdrop-filter:blur(24px) saturate(1.3);
+    border-left:1px solid var(--line);
+    box-shadow:-24px 0 60px rgba(0,0,0,.55);
+    display:flex; flex-direction:column;
+    transform:translateX(100%);
+    transition:transform .32s var(--ease);
+    padding-bottom:var(--sab);
+  }
+  .side-panel.open { transform:none; }
+
+  .sp-head {
+    display:flex; align-items:center; gap:12px;
+    padding:calc(16px + var(--sat)) 16px 14px 20px;
+    border-bottom:1px solid var(--line);
+    flex-shrink:0;
+  }
+  .sp-head-text { flex:1; min-width:0; }
+  .sp-title {
+    font-size:15px; font-weight:800; letter-spacing:.3px;
+    display:flex; align-items:center; gap:8px;
+  }
+  .sp-title::before {
+    content:""; width:4px; height:16px; border-radius:3px;
+    background:linear-gradient(180deg, var(--accent), #d99407);
+  }
+  .sp-sub {
+    font-size:12px; color:var(--dim); margin-top:3px; font-weight:500;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    padding-left:12px;
+  }
+  .sp-close {
+    width:34px; height:34px; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center;
+    background:rgba(255,255,255,.06); border:1px solid var(--line);
+    border-radius:9px; color:#fff; cursor:pointer;
+    transition:background .15s, color .15s;
+  }
+  .sp-close:hover { background:rgba(255,255,255,.14); }
+  .sp-close svg { width:18px; height:18px; fill:none; stroke:currentColor;
+                  stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
+
+  .sp-body {
+    flex:1; overflow-y:auto; padding:8px 8px 20px;
+    scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.25) transparent;
+  }
+  .sp-body::-webkit-scrollbar { width:7px; }
+  .sp-body::-webkit-scrollbar-thumb { background:rgba(255,255,255,.2); border-radius:4px; }
+  .sp-body::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,.35); }
+
+  .sp-loading {
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:14px; padding:70px 20px; color:var(--dim); font-size:13px;
+  }
+  .spinner-sm {
+    width:28px; height:28px; border-radius:50%;
+    border:2.5px solid rgba(255,255,255,.14); border-top-color:var(--accent);
+    animation:spin .8s linear infinite;
+  }
+  .sp-empty {
+    padding:50px 24px; text-align:center; color:var(--dim); font-size:13px;
+    line-height:1.6;
+  }
+
+  .ep-card {
+    display:flex; gap:12px; padding:9px;
+    border-radius:11px; cursor:pointer;
+    border:1px solid transparent;
+    transition:background .15s ease, border-color .15s ease, transform .15s ease;
+  }
+  .ep-card:hover { background:rgba(255,255,255,.055); }
+  .ep-card:active { transform:scale(.985); }
+  .ep-card.active {
+    background:rgba(245,179,36,.09);
+    border-color:rgba(245,179,36,.35);
+  }
+  .ep-card.active .ep-title { color:var(--accent); }
+
+  .ep-thumb {
+    position:relative; width:124px; aspect-ratio:16/9; flex-shrink:0;
+    border-radius:8px; overflow:hidden; background:#0d0d10;
+    border:1px solid rgba(255,255,255,.05);
+  }
+  .ep-thumb .placeholder {
+    position:absolute; inset:0;
+    display:flex; align-items:center; justify-content:center;
+    background:linear-gradient(135deg, #24242c 0%, #16161b 100%);
+    font-size:22px; font-weight:800; color:rgba(255,255,255,.22);
+    letter-spacing:-.5px;
+  }
+  .ep-thumb .ep-img {
+    position:absolute; inset:0;
+    background-size:cover; background-position:center;
+    background-repeat:no-repeat;
+    transition:transform .3s var(--ease);
+  }
+  .ep-card:hover .ep-img { transform:scale(1.06); }
+  .ep-thumb .num {
+    position:absolute; left:5px; bottom:5px; z-index:2;
+    padding:2px 7px; border-radius:5px;
+    background:rgba(0,0,0,.78); font-size:11px; font-weight:800;
+    letter-spacing:.3px; font-variant-numeric:tabular-nums;
+    border:1px solid rgba(255,255,255,.14);
+  }
+  .ep-card.active .ep-thumb .num {
+    background:var(--accent); color:#111; border-color:transparent;
+  }
+  .ep-thumb .playing-dot {
+    position:absolute; top:6px; right:6px; z-index:2;
+    width:8px; height:8px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 0 3px rgba(245,179,36,.28);
+    animation:pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { transform:scale(1); opacity:1; }
+    50%      { transform:scale(1.3); opacity:.7; }
+  }
+
+  .ep-info { flex:1; min-width:0; padding:2px 2px 0 0; }
+  .ep-title {
+    font-size:13.5px; font-weight:700; line-height:1.3;
+    margin-bottom:4px; color:#fff;
+    display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden;
+  }
+  .ep-desc {
+    font-size:12px; line-height:1.45; color:var(--dim);
+    display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden;
+    font-weight:400;
+  }
 
   /* ── toast ───────────────────────────────────────────────── */
   .toast {
@@ -696,10 +909,20 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
     #btnPip { display:none; }
     .ctrl .lbl { display:none; }
     .menu { bottom:calc(76px + var(--sab)); right:calc(10px + var(--sar)); }
+
+    .side-panel {
+      width:100%; border-left:none;
+      box-shadow:-12px 0 40px rgba(0,0,0,.5);
+    }
+    .sp-head { padding:calc(14px + var(--sat)) 12px 12px 16px; }
+    .ep-thumb { width:110px; }
+    .ep-title { font-size:13px; }
+    .ep-desc { -webkit-line-clamp:2; font-size:11.5px; }
   }
   @media (max-width:420px) {
     #btnBack, #btnFwd { display:none; }
     .time .dur, .time .sep { display:none; }
+    .ep-thumb { width:96px; }
   }
 </style>
 </head>
@@ -741,12 +964,6 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
     <div id="audioList"></div>
   </div>
 
-  <!-- Episodes -->
-  <div class="menu" id="menuEps" style="width:318px">
-    <div class="menu-head" id="epsHead">Episodes</div>
-    <div class="ep-grid" id="epGrid"></div>
-  </div>
-
   <!-- Captions -->
   <div class="menu" id="menuSubs">
     <div class="menu-head">Subtitles</div>
@@ -764,6 +981,21 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
       <div id="speedList"></div>
     </div>
   </div>
+
+  <!-- Episode side panel -->
+  <div class="panel-backdrop" id="panelBackdrop"></div>
+  <aside class="side-panel" id="sidePanel" aria-hidden="true">
+    <div class="sp-head">
+      <div class="sp-head-text">
+        <div class="sp-title">Episodes</div>
+        <div class="sp-sub" id="spSub"></div>
+      </div>
+      <button class="sp-close" id="spClose" aria-label="Close episodes">
+        <svg viewBox="0 0 24 24"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="sp-body" id="spBody"></div>
+  </aside>
 
   <div class="controls" id="controls">
     <div class="seek-row">
@@ -842,6 +1074,8 @@ const btnPlay = $('btnPlay'), btnMute = $('btnMute'), volSlider = $('volSlider')
 const btnFs = $('btnFs'), btnNext = $('btnNext'), btnEps = $('btnEps');
 const btnAudio = $('btnAudio'), btnCc = $('btnCc'), btnSettings = $('btnSettings');
 const flash = $('flash'), toastEl = $('toast'), skipBtn = $('skipBtn'), skipLabel = $('skipLabel');
+const sidePanel = $('sidePanel'), spBody = $('spBody'), spSub = $('spSub');
+const panelBackdrop = $('panelBackdrop');
 
 const IS_TOUCH = (function(){
   return (window.matchMedia && window.matchMedia('(hover:none) and (pointer:coarse)').matches)
@@ -914,12 +1148,15 @@ async function loadMeta(){
     animeTitle = t.english || t.romaji || t.native || '';
     totalEps = m.episodes || (m.nextAiringEpisode && m.nextAiringEpisode.episode ? m.nextAiringEpisode.episode - 1 : 0) || 0;
     paintTitle();
-    buildEpisodes();
+    if(totalEps >= 2){
+      btnEps.classList.remove('hidden');
+    }
+    spSub.textContent = animeTitle || '';
   }catch(e){ console.warn('[meta]', e.message); }
 }
 
 /* ── controls visibility ── */
-function anyMenuOpen(){ return !!document.querySelector('.menu.open'); }
+function anyMenuOpen(){ return !!document.querySelector('.menu.open') || sidePanel.classList.contains('open'); }
 function showControls(){
   controls.classList.add('visible'); topbar.classList.add('visible');
   brandEl.classList.remove('idle'); stageEl.classList.remove('cursor-hidden');
@@ -931,10 +1168,9 @@ function hideControls(){
   brandEl.classList.add('idle'); stageEl.classList.add('cursor-hidden');
 }
 
-/* ── menus ── */
+/* ── popup menus ── */
 const MENUS = {
   audio:{ btn:btnAudio,   el:$('menuAudio') },
-  eps:  { btn:btnEps,     el:$('menuEps') },
   subs: { btn:btnCc,      el:$('menuSubs') },
   set:  { btn:btnSettings, el:$('menuSet') }
 };
@@ -950,7 +1186,7 @@ function toggleMenu(key){
   else {
     m.el.style.left = 'auto';
     m.el.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
-    if(key !== 'eps') m.el.style.width = '';
+    m.el.style.width = '';
   }
   m.el.classList.add('open'); m.btn.classList.add('on');
   clearTimeout(hideTimer);
@@ -959,6 +1195,160 @@ Object.keys(MENUS).forEach(k => MENUS[k].btn.addEventListener('click', e => { e.
 document.addEventListener('click', e => {
   if(!e.target.closest('.menu')) closeMenus();
 });
+
+/* ══════════════════════════════════════════════════════════
+   EPISODE SIDE PANEL
+   ══════════════════════════════════════════════════════════ */
+let epData = null;      // { episodes:[{number,title,summary,image,airDate,length}] }
+let epLoading = false;
+
+async function loadEpisodeList(force){
+  if(epData && !force) return epData;
+  if(epLoading) return null;
+  epLoading = true;
+  try{
+    const r = await fetch('/api/episodes/' + ANILIST_ID);
+    if(r.ok){
+      const j = await r.json();
+      epData = (j && Array.isArray(j.episodes)) ? j : { episodes: [] };
+    } else {
+      epData = { episodes: [] };
+    }
+  }catch(e){
+    console.warn('[eps]', e.message);
+    epData = { episodes: [] };
+  }
+  epLoading = false;
+  return epData;
+}
+
+function buildEpisodeCard(ep){
+  const card = document.createElement('div');
+  card.className = 'ep-card' + (ep.number === EPISODE ? ' active' : '');
+
+  /* thumb */
+  const thumb = document.createElement('div');
+  thumb.className = 'ep-thumb';
+
+  const ph = document.createElement('div');
+  ph.className = 'placeholder';
+  ph.textContent = ep.number;
+  thumb.appendChild(ph);
+
+  if(ep.image){
+    const img = document.createElement('div');
+    img.className = 'ep-img';
+    img.style.backgroundImage = 'url("' + String(ep.image).replace(/"/g, '\\"') + '")';
+    thumb.appendChild(img);
+  }
+
+  const num = document.createElement('span');
+  num.className = 'num';
+  num.textContent = ep.number;
+  thumb.appendChild(num);
+
+  if(ep.number === EPISODE){
+    const dot = document.createElement('span');
+    dot.className = 'playing-dot';
+    thumb.appendChild(dot);
+  }
+
+  /* info */
+  const info = document.createElement('div');
+  info.className = 'ep-info';
+
+  const title = document.createElement('div');
+  title.className = 'ep-title';
+  title.textContent = ep.title || ('Episode ' + ep.number);
+  info.appendChild(title);
+
+  const desc = document.createElement('div');
+  desc.className = 'ep-desc';
+  desc.textContent = ep.summary || 'No description available.';
+  info.appendChild(desc);
+
+  card.appendChild(thumb);
+  card.appendChild(info);
+
+  card.onclick = ()=>{
+    if(ep.number === EPISODE){ closePanel(); return; }
+    go(ep.number, LANG, 0);
+  };
+  return card;
+}
+
+function renderEpisodeList(){
+  spBody.innerHTML = '';
+  const list = (epData && epData.episodes) ? epData.episodes.slice() : [];
+
+  /* Fall back to numbered entries when AniZip has nothing */
+  if(!list.length){
+    const max = totalEps > 0 ? totalEps : EPISODE;
+    if(max < 1){
+      spBody.innerHTML = '<div class="sp-empty">No episode metadata available.</div>';
+      return;
+    }
+    for(let n = 1; n <= max; n++){
+      list.push({ number:n, title:'', summary:'', image:'' });
+    }
+  }
+
+  /* If AniList says there are more episodes than AniZip returned, top it up. */
+  if(totalEps > 0 && list.length < totalEps){
+    const have = new Set(list.map(e => e.number));
+    for(let n = 1; n <= totalEps; n++){
+      if(!have.has(n)) list.push({ number:n, title:'', summary:'', image:'' });
+    }
+    list.sort((a,b)=>a.number - b.number);
+  }
+
+  const frag = document.createDocumentFragment();
+  list.forEach(ep => frag.appendChild(buildEpisodeCard(ep)));
+  spBody.appendChild(frag);
+
+  /* Update header subtitle with count */
+  const count = Math.max(list.length, totalEps);
+  spSub.textContent = (animeTitle ? animeTitle + '  ·  ' : '') + count + ' episode' + (count === 1 ? '' : 's');
+}
+
+function scrollActiveIntoView(){
+  const active = spBody.querySelector('.ep-card.active');
+  if(active) setTimeout(()=> active.scrollIntoView({ block:'center' }), 80);
+}
+
+function openPanel(){
+  closeMenus();
+  sidePanel.classList.add('open');
+  sidePanel.setAttribute('aria-hidden', 'false');
+  panelBackdrop.classList.add('open');
+  btnEps.classList.add('on');
+  clearTimeout(hideTimer);
+
+  (async ()=>{
+    if(!epData){
+      spBody.innerHTML = '<div class="sp-loading"><div class="spinner-sm"></div><span>Loading episodes…</span></div>';
+      await loadEpisodeList();
+    }
+    renderEpisodeList();
+    if(totalEps === 0 && epData && epData.episodes && epData.episodes.length){
+      totalEps = epData.episodes.length;
+      paintTitle();
+    }
+    scrollActiveIntoView();
+  })();
+}
+function closePanel(){
+  sidePanel.classList.remove('open');
+  sidePanel.setAttribute('aria-hidden', 'true');
+  panelBackdrop.classList.remove('open');
+  btnEps.classList.remove('on');
+}
+function togglePanel(){
+  if(sidePanel.classList.contains('open')) closePanel(); else openPanel();
+}
+btnEps.addEventListener('click', e => { e.stopPropagation(); togglePanel(); });
+$('spClose').addEventListener('click', e => { e.stopPropagation(); closePanel(); });
+panelBackdrop.addEventListener('click', closePanel);
 
 /* Audio (Sub / Dub) */
 function buildAudio(){
@@ -978,25 +1368,9 @@ function buildAudio(){
 }
 buildAudio();
 
-/* Episodes + Next */
-function buildEpisodes(){
-  if(!totalEps || totalEps < 2) return;
-  btnEps.classList.remove('hidden');
-  $('epsHead').textContent = 'Episodes · ' + totalEps;
-  const grid = $('epGrid'); grid.innerHTML = '';
-  for(let n = 1; n <= totalEps; n++){
-    const b = document.createElement('button');
-    b.className = 'ep' + (n === EPISODE ? ' active' : '');
-    b.textContent = n;
-    b.onclick = ()=>{ if(n !== EPISODE) go(n, LANG, 0); else closeMenus(); };
-    grid.appendChild(b);
-  }
-  if(EPISODE < totalEps) btnNext.classList.remove('hidden');
-  btnEps.addEventListener('click', ()=>{
-    const a = grid.querySelector('.active'); if(a) setTimeout(()=>a.scrollIntoView({block:'center'}), 30);
-  });
-}
-btnNext.addEventListener('click', ()=>{ if(EPISODE < totalEps) go(EPISODE + 1, LANG, 0); });
+btnNext.addEventListener('click', ()=>{
+  if(totalEps > 0 && EPISODE < totalEps) go(EPISODE + 1, LANG, 0);
+});
 
 /* ── play / pause ── */
 function togglePlay(){ if(video.paused) video.play().catch(()=>{}); else video.pause(); }
@@ -1007,10 +1381,7 @@ function flashIcon(key){
 function syncPlayIcon(){ setIcon($('iconPlay'), video.paused ? 'play' : 'pause'); }
 btnPlay.addEventListener('click', togglePlay);
 
-/* ── tap / click behaviour ──────────────────────────────────
-   Desktop: single-click = play/pause, double-click = fullscreen
-   Touch:   single-tap  = show controls (or play/pause),
-            double-tap  = fullscreen (matches native mobile UX) */
+/* ── tap / click behaviour ── */
 if(IS_TOUCH){
   let _tapStartX = 0, _tapStartY = 0, _tapTimer = null, _tapCount = 0;
   video.addEventListener('touchstart', e=>{
@@ -1025,6 +1396,7 @@ if(IS_TOUCH){
     if(_tapCount === 1){
       _tapTimer = setTimeout(()=>{
         _tapCount = 0;
+        if(sidePanel.classList.contains('open')){ closePanel(); return; }
         if(anyMenuOpen()){ closeMenus(); return; }
         if(!controls.classList.contains('visible') && !video.paused){ showControls(); return; }
         togglePlay(); flashIcon(video.paused ? 'play' : 'pause');
@@ -1039,6 +1411,7 @@ if(IS_TOUCH){
 } else {
   let clickTimer = null;
   video.addEventListener('click', ()=>{
+    if(sidePanel.classList.contains('open')){ closePanel(); return; }
     if(anyMenuOpen()){ closeMenus(); return; }
     clearTimeout(clickTimer);
     clickTimer = setTimeout(()=>{ togglePlay(); flashIcon(video.paused ? 'play' : 'pause'); }, 220);
@@ -1089,7 +1462,7 @@ video.addEventListener('progress', ()=>{
   pBuf.style.width = (video.buffered.end(video.buffered.length-1) / video.duration * 100) + '%';
 });
 
-/* ── skip intro / outro (+ amber markers on the bar) ── */
+/* ── skip intro / outro ── */
 function skipLabelFor(type){
   if(type === 'op' || type === 'mixed-op') return 'Skip Intro';
   if(type === 'ed' || type === 'mixed-ed') return 'Skip Outro';
@@ -1177,19 +1550,9 @@ video.addEventListener('volumechange', updateVolIcon);
 lastVol = loadVol() || 1;
 applyVol(loadVol());
 
-/* ═══════════════════════════════════════════════════════════
+/* ══════════════════════════════════════════════════════════
    FULLSCREEN  — desktop + Android + iOS Safari
-   ═══════════════════════════════════════════════════════════
-   Path 1 (Desktop / Android Chrome / iPadOS 16.4+ / iOS 16.4+):
-       stageEl.requestFullscreen()   ← custom controls preserved.
-   Path 2 (iOS Safari < 16.4 — no Element.requestFullscreen):
-       video.webkitEnterFullscreen() ← native iOS video player.
-       Must be called *synchronously* in the click handler so the
-       user gesture isn't consumed; that's why we branch on
-       typeof requestFullscreen *before* any await/promise.
-   Path 3 (last resort — WebView with neither API):
-       CSS fake fullscreen on #stage.
-   ───────────────────────────────────────────────────────── */
+   ══════════════════════════════════════════════════════════ */
 let _fakeFs = false;
 let _iosFs  = false;
 
@@ -1201,7 +1564,6 @@ function _nativeFsActive(){
 function _anyFsActive(){ return _fakeFs || _nativeFsActive(); }
 function _applyFsIcon(){ setIcon($('iconFs'), _anyFsActive() ? 'fsExit' : 'fsEnter'); }
 
-/* iOS native video fullscreen event wiring — keeps the FS icon in sync */
 video.addEventListener('webkitbeginfullscreen', ()=>{ _iosFs = true;  _applyFsIcon(); });
 video.addEventListener('webkitendfullscreen',   ()=>{ _iosFs = false; _applyFsIcon(); });
 
@@ -1223,19 +1585,15 @@ function _exitFakeFs(){
   _applyFsIcon();
   try { window.dispatchEvent(new Event('resize')); } catch(e){}
 }
-
 function _exitAnyFs(){
-  /* iOS native video fullscreen exit */
   if(_iosFs && typeof video.webkitExitFullscreen === 'function'){
     try { video.webkitExitFullscreen(); } catch(e){}
     return;
   }
-  /* Standard Fullscreen API exit */
   const exit = document.exitFullscreen || document.webkitExitFullscreen ||
                document.mozCancelFullScreen || document.msExitFullscreen;
   if(typeof exit === 'function'){ try { exit.call(document); } catch(e){} }
 }
-
 function _tryIosNativeFs(){
   if(typeof video.webkitEnterFullscreen === 'function' && !video.webkitDisplayingFullscreen){
     try { video.webkitEnterFullscreen(); return true; } catch(e){}
@@ -1246,9 +1604,7 @@ function _fallbackFs(){
   if(_tryIosNativeFs()) return;
   _enterFakeFs();
 }
-
 function toggleFs(){
-  /* ── 1. If already fullscreen in any mode, exit ── */
   if(_nativeFsActive() || video.webkitDisplayingFullscreen){
     if(_fakeFs) _exitFakeFs();
     _exitAnyFs();
@@ -1256,43 +1612,22 @@ function toggleFs(){
   }
   if(_fakeFs){ _exitFakeFs(); return; }
 
-  /* ── 2. Check synchronously whether the standard Fullscreen API exists ──
-     iOS Safari < 16.4 does NOT expose Element.requestFullscreen; in that
-     case we must fall through to video.webkitEnterFullscreen() *now*,
-     while the user gesture is still valid. Any promise path would waste
-     the gesture and the iOS call would silently no-op. */
   const el = stageEl;
   const req = el.requestFullscreen || el.webkitRequestFullscreen ||
               el.mozRequestFullScreen || el.msRequestFullscreen;
 
-  if(typeof req !== 'function'){
-    /* No Element fullscreen API at all → iOS Safari < 16.4, or a stripped
-       WebView. Go straight to native iOS video fullscreen / fake-fs. */
-    _fallbackFs();
-    return;
-  }
+  if(typeof req !== 'function'){ _fallbackFs(); return; }
 
-  /* ── 3. Standard path (desktop / Android / iPadOS 16.4+ / iOS 16.4+) ── */
   try {
     const ret = req.call(el);
     if(ret && typeof ret.then === 'function'){
       ret.then(()=>{
-        /* Some WebViews silently resolve *without* actually entering
-           fullscreen. Verify and fall back if that happened. */
         const reallyFs = !!(document.fullscreenElement ||
                             document.webkitFullscreenElement ||
                             document.mozFullScreenElement ||
                             document.msFullscreenElement);
-        if(!reallyFs){
-          _fallbackFs();
-        } else {
-          _applyFsIcon();
-        }
-      }).catch(()=>{
-        /* Promise rejected (permissions, gesture lost, iframe policy) →
-           try iOS-native, then fake-fs. */
-        _fallbackFs();
-      });
+        if(!reallyFs){ _fallbackFs(); } else { _applyFsIcon(); }
+      }).catch(()=>{ _fallbackFs(); });
     } else {
       setTimeout(_applyFsIcon, 60);
     }
@@ -1302,7 +1637,6 @@ function toggleFs(){
 }
 btnFs.addEventListener('click', toggleFs);
 
-/* Keep the icon synced with the standard Fullscreen API events */
 ['fullscreenchange','webkitfullscreenchange','mozfullscreenchange','MSFullscreenChange'].forEach(ev=>{
   document.addEventListener(ev, _applyFsIcon);
 });
@@ -1412,8 +1746,10 @@ document.addEventListener('keydown', e=>{
     case 'f': case 'F': toggleFs(); break;
     case 'p': case 'P': $('btnPip').click(); break;
     case 'n': case 'N': if(!btnNext.classList.contains('hidden')) btnNext.click(); break;
+    case 'e': case 'E': if(!btnEps.classList.contains('hidden')) togglePanel(); break;
     case 'c': case 'C': if(!btnCc.classList.contains('hidden')) btnCc.click(); break;
     case 'Escape':
+      if(sidePanel.classList.contains('open')){ closePanel(); break; }
       if(_fakeFs) _exitFakeFs();
       if(_nativeFsActive() || video.webkitDisplayingFullscreen){ _exitAnyFs(); }
       closeMenus();
@@ -1563,8 +1899,9 @@ DOCS_TEMPLATE = r"""<!DOCTYPE html>
     <div class="ep-head"><span class="method get">GET</span>
       <span class="path">/embed/&lt;anilist_id&gt;/&lt;episode&gt;/&lt;sub|dub&gt;</span></div>
     <p class="desc">Self-contained HLS player with custom controls
-      (quality, speed, volume, PiP, fullscreen, subtitles) and an
-      auto-detected skip-intro/outro button powered by AniSkip. Use as an
+      (quality, speed, volume, PiP, fullscreen, subtitles), an
+      auto-detected skip-intro/outro button, and a slide-in episode
+      drawer with thumbnails + synopses (via AniZip). Use as an
       iframe <code>src</code>.</p>
     <pre>GET /embed/21/1/sub</pre>
   </div>
@@ -1578,6 +1915,28 @@ DOCS_TEMPLATE = r"""<!DOCTYPE html>
   <span class="k">"m3u8"</span>: <span class="s">"/proxy?url=https%3A%2F%2F..."</span>,
   <span class="k">"subtitles"</span>: [
     { <span class="k">"url"</span>: <span class="s">"/proxy?url=..."</span>, <span class="k">"lang"</span>: <span class="s">"English"</span> }
+  ]
+}</pre>
+  </div>
+
+  <div class="ep">
+    <div class="ep-head"><span class="method get">GET</span>
+      <span class="path">/api/episodes/&lt;anilist_id&gt;</span></div>
+    <p class="desc">Episode metadata for the player's side drawer: title,
+      synopsis, and 16:9 thumbnail. Sourced from AniZip
+      (<code>api.ani.zip</code>), which maps AniList IDs to TVDB-backed
+      episode records. Cached 1 hour. Returns an empty
+      <code>episodes</code> array if AniZip has no data for the title.</p>
+    <pre>{
+  <span class="k">"episodes"</span>: [
+    {
+      <span class="k">"number"</span>: <span class="s">1</span>,
+      <span class="k">"title"</span>: <span class="s">"Romance Dawn"</span>,
+      <span class="k">"summary"</span>: <span class="s">"Monkey D. Luffy sets sail..."</span>,
+      <span class="k">"image"</span>: <span class="s">"https://artworks.thetvdb.com/banners/..."</span>,
+      <span class="k">"airDate"</span>: <span class="s">"1999-10-20"</span>,
+      <span class="k">"length"</span>: <span class="s">1440</span>
+    }
   ]
 }</pre>
   </div>
@@ -1646,7 +2005,8 @@ DOCS_TEMPLATE = r"""<!DOCTYPE html>
     <code>↑</code> / <code>↓</code> — volume ±5%<br>
     <code>M</code> — mute &nbsp;·&nbsp; <code>F</code> — fullscreen
     &nbsp;·&nbsp; <code>P</code> — picture-in-picture<br>
-    <code>Esc</code> — close settings panel
+    <code>E</code> — episodes drawer<br>
+    <code>Esc</code> — close panels
   </p>
 
   <h2>Mobile Gestures</h2>
@@ -1656,8 +2016,16 @@ DOCS_TEMPLATE = r"""<!DOCTYPE html>
     <b>Fullscreen</b> — uses the standard Fullscreen API on desktop, Android,
     and iPadOS/iOS 16.4+. On older iOS Safari (no element-level Fullscreen
     API) the player switches to the native iOS video player via
-    <code>video.webkitEnterFullscreen()</code>. Both paths genuinely fill the
-    screen — the button no longer no-ops on phones.
+    <code>video.webkitEnterFullscreen()</code>.
+  </p>
+
+  <h2>Episodes Drawer</h2>
+  <p>
+    Tapping the grid button opens a right-side drawer listing every episode
+    with a thumbnail, title, and synopsis. Clicking an entry loads that
+    episode immediately while preserving the current audio language. The
+    drawer is full-width on phones and 420&nbsp;px wide on desktop; a
+    semi-transparent backdrop closes it, as does <code>Esc</code>.
   </p>
 
   <h2>Skip Times (AniSkip)</h2>
@@ -1669,7 +2037,7 @@ DOCS_TEMPLATE = r"""<!DOCTYPE html>
     player. Clicking it seeks to the end of the segment.
   </p>
 
-  <footer>ThyAnime · built on MegaPlay + AniList + AniSkip · powered by hls.js</footer>
+  <footer>ThyAnime · built on MegaPlay + AniList + AniSkip + AniZip · powered by hls.js</footer>
 </div>
 </body>
 </html>
@@ -1751,6 +2119,8 @@ class Handler(BaseHTTPRequestHandler):
                                   "text/plain; charset=utf-8")
             if path.startswith("/api/anime/"):
                 return self._api_anime(path)
+            if path.startswith("/api/episodes/"):
+                return self._api_episodes(path)
             if path.startswith("/api/resolve/"):
                 return self._api_resolve(path)
             if path.startswith("/api/skip/"):
@@ -1776,6 +2146,25 @@ class Handler(BaseHTTPRequestHandler):
         if not media:
             return self._json(404, {"error": "not found"})
         return self._json(200, media)
+
+    def _api_episodes(self, path):
+        try:
+            aid = int(path.rstrip("/").rsplit("/", 1)[-1])
+        except ValueError:
+            return self._json(400, {"error": "bad id"})
+        key = ("eps", aid)
+        cached = cache_get(key)
+        if cached:
+            print(f"  \033[90m│\033[0m  cache  hit  episodes {aid}")
+            return self._json(200, cached)
+        print(f"  \033[90m│\033[0m  anizip  anilist=\033[33m{aid}\033[0m")
+        data = get_anizip_episodes(aid)
+        if not data:
+            # still return a well-formed shape so the client can fall back
+            data = {"episodes": []}
+        cache_set(key, data, ttl=3600)
+        print(f"  \033[90m│\033[0m  anizip  \033[32mOK\033[0m  {len(data['episodes'])} episodes")
+        return self._json(200, data)
 
     def _api_resolve(self, path):
         parts = path.strip("/").split("/")
@@ -2059,7 +2448,7 @@ def banner():
     print(f"  {D}│{R}  {P}   ██║   ██║  ██║   ██║   ██║  ██║██║ ╚████║██║██║ ╚═╝ ██║███████╗{R}")
     print(f"  {D}│{R}  {P}   ╚═╝   ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝╚═╝     ╚═╝╚══════╝{R}")
     print(f"  {D}│{R}")
-    print(f"  {D}│{R}  \033[90mMegaPlay proxy  ·  custom HLS player  ·  AniList + AniSkip\033[0m")
+    print(f"  {D}│{R}  \033[90mMegaPlay proxy  ·  custom HLS player  ·  AniList + AniSkip + AniZip\033[0m")
     print(f"  {D}│{R}  \033[90mTunnel: Cloudflare token-based Named Tunnel\033[0m")
     print(f"  {D}╰──────────────────────────────────────────────────────────╯{R}")
     print()
