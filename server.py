@@ -432,21 +432,21 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
   }
   .brand-mark {
     width:34px; height:34px; border-radius:50%;
-    background: conic-gradient(from 0deg, #a855f7, #6366f1, #ec4899, #a855f7);
+    overflow:hidden;
     display:flex; align-items:center; justify-content:center;
-    font-weight:900; font-size:15px; color:#fff;
     box-shadow:0 0 18px rgba(168,85,247,.55), 0 0 36px rgba(124,58,237,.28);
     position:relative;
-    animation: brand-pulse 2.6s ease-in-out infinite,
-               brand-rotate 12s linear infinite;
+    border:1.5px solid rgba(168,85,247,.55);
+    background:#0d0a1a;
+    animation: brand-pulse 2.6s ease-in-out infinite;
+  }
+  .brand-mark img {
+    width:100%; height:100%; object-fit:cover; display:block;
+    border-radius:50%;
   }
   @keyframes brand-pulse {
     0%,100% { box-shadow:0 0 16px rgba(168,85,247,.5), 0 0 32px rgba(124,58,237,.22); }
     50%     { box-shadow:0 0 26px rgba(168,85,247,.9), 0 0 54px rgba(236,72,153,.45); }
-  }
-  @keyframes brand-rotate {
-    from { filter: hue-rotate(0deg); }
-    to   { filter: hue-rotate(360deg); }
   }
   .brand-text {
     font-weight:800; letter-spacing:1.6px; font-size:15px;
@@ -788,7 +788,7 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
     .controls { padding:50px 12px 12px; }
     .settings-panel { right:12px; width: calc(100vw - 24px); bottom:74px; }
     .brand { top:12px; right:14px; }
-    .brand-mark { width:28px; height:28px; font-size:13px; }
+    .brand-mark { width:28px; height:28px; }
     .brand-text { font-size:13px; }
     .skip-btn { right:12px; bottom:96px; padding:9px 15px; font-size:12.5px; }
   }
@@ -799,7 +799,7 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
   <video id="video" playsinline crossorigin="anonymous"></video>
 
   <div class="brand" id="brand">
-    <div class="brand-mark">T</div>
+    <div class="brand-mark"><img src="https://media1.tenor.com/m/fSskkWtbhHIAAAAC/delta-eminence-in-shadow.gif" alt="ThyAnime"/></div>
     <div class="brand-text">ThyAnime</div>
   </div>
 
