@@ -93,11 +93,7 @@ DEBUG = os.environ.get("DEBUG", "0") == "1"
 HERE = os.path.dirname(os.path.abspath(__file__))
 PUBLIC_URL = {"value": None}
 _CLOUDFLARED_PROC = None
-# Set by the drain thread when cloudflared logs "Registered tunnel connection".
-# This is the definitive signal that the tunnel is up, and it doesn't depend
-# on the local machine's DNS resolver working.
 _CLOUDFLARED_CONNECTED = threading.Event()
-# Counter so we can see how many connection registrations happen.
 _CLOUDFLARED_CONN_COUNT = {"value": 0}
 
 # ─────────────────────────── AES ───────────────────────────
@@ -407,390 +403,274 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>ThyAnime</title>
 <style>
-  *, *::before, *::after { box-sizing: border-box; }
+  :root {
+    --accent:#f5b324;
+    --menu-bg:rgba(20,20,22,.95);
+    --line:rgba(255,255,255,.10);
+    --dim:rgba(255,255,255,.62);
+    --ease:cubic-bezier(.2,.8,.2,1);
+  }
+  *, *::before, *::after { box-sizing:border-box; }
   html, body { margin:0; padding:0; height:100%; background:#000; overflow:hidden;
                font-family:'Inter','Segoe UI',system-ui,-apple-system,sans-serif;
                color:#fff; -webkit-font-smoothing:antialiased; }
-  #stage { position:fixed; inset:0; }
+  button { font-family:inherit; }
+  #stage { position:fixed; inset:0; background:#000; }
+  #stage.cursor-hidden, #stage.cursor-hidden * { cursor:none !important; }
   video { width:100%; height:100%; display:block; background:#000; outline:none; }
+  video::cue { background:rgba(0,0,0,.65); color:#fff; font-family:inherit; }
 
-  #stage.cursor-hidden,
-  #stage.cursor-hidden * { cursor: none !important; }
-
+  /* ── watermark ───────────────────────────────────────────── */
   .brand {
-    position:absolute; top:16px; right:20px; z-index:8;
-    display:flex; align-items:center; gap:10px;
+    position:absolute; top:18px; right:22px; z-index:8;
+    display:flex; align-items:center; gap:9px;
     pointer-events:none; user-select:none;
-    opacity:.85;
-    transition: opacity .7s ease;
-    animation: brand-in .9s cubic-bezier(.34,1.56,.64,1) both;
+    opacity:.55; transition:opacity .6s ease;
+    text-shadow:0 1px 8px rgba(0,0,0,.8);
   }
-  .brand.idle { opacity:.22; }
-  @keyframes brand-in {
-    from { opacity:0; transform: translateY(-14px) scale(.85); }
-    to   { opacity:.85; transform: translateY(0) scale(1); }
+  .brand.idle { opacity:.28; }
+  .brand img {
+    width:26px; height:26px; border-radius:50%; object-fit:cover; display:block;
+    border:1.5px solid rgba(255,255,255,.35); background:#111;
   }
-  .brand-mark {
-    width:34px; height:34px; border-radius:50%;
-    overflow:hidden;
-    display:flex; align-items:center; justify-content:center;
-    box-shadow:0 0 18px rgba(168,85,247,.55), 0 0 36px rgba(124,58,237,.28);
-    position:relative;
-    border:1.5px solid rgba(168,85,247,.55);
-    background:#0d0a1a;
-    animation: brand-pulse 2.6s ease-in-out infinite;
-  }
-  .brand-mark img {
-    width:100%; height:100%; object-fit:cover; display:block;
-    border-radius:50%;
-  }
-  @keyframes brand-pulse {
-    0%,100% { box-shadow:0 0 16px rgba(168,85,247,.5), 0 0 32px rgba(124,58,237,.22); }
-    50%     { box-shadow:0 0 26px rgba(168,85,247,.9), 0 0 54px rgba(236,72,153,.45); }
-  }
-  .brand-text {
-    font-weight:800; letter-spacing:1.6px; font-size:15px;
-    background: linear-gradient(120deg, #e9d5ff, #a855f7 30%, #ec4899 55%, #6366f1 80%, #e9d5ff);
-    background-size: 260% 100%;
-    -webkit-background-clip:text; background-clip:text; color:transparent;
-    animation: brand-shimmer 4s linear infinite;
-  }
-  @keyframes brand-shimmer {
-    from { background-position: 0% 0; }
-    to   { background-position: 260% 0; }
-  }
+  .brand span { font-size:15px; font-weight:800; letter-spacing:.4px; }
+  .brand span b { color:var(--accent); font-weight:800; }
 
+  /* ── top bar (title) ─────────────────────────────────────── */
+  .topbar {
+    position:absolute; left:0; right:0; top:0; z-index:9;
+    padding:20px 150px 70px 24px;
+    background:linear-gradient(180deg, rgba(0,0,0,.75), rgba(0,0,0,.35) 55%, transparent);
+    opacity:0; transition:opacity .3s ease; pointer-events:none;
+  }
+  .topbar.visible { opacity:1; }
+  .title { font-size:18px; font-weight:700; line-height:1.25;
+           white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .subtitle { font-size:13px; color:var(--dim); margin-top:3px; font-weight:500; }
+
+  /* ── loading / error overlay ─────────────────────────────── */
   .overlay {
-    position:absolute; inset:0; z-index:20;
-    display:flex; flex-direction:column; align-items:center;
-    justify-content:center; gap:20px;
-    background: radial-gradient(circle at 50% 40%, #0d0a1a, #050308);
-    transition: opacity .5s ease;
+    position:absolute; inset:0; z-index:30;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px;
+    background:#000; transition:opacity .4s ease;
   }
   .overlay.hidden { opacity:0; pointer-events:none; }
   .spinner {
-    width:56px; height:56px; position:relative;
-    animation: spin-wrap 3s ease-in-out infinite;
+    width:46px; height:46px; border-radius:50%;
+    border:3px solid rgba(255,255,255,.14); border-top-color:var(--accent);
+    animation:spin .8s linear infinite;
   }
-  @keyframes spin-wrap {
-    0%,100% { transform: scale(1); }
-    50%     { transform: scale(1.06); }
-  }
-  .spinner::before, .spinner::after {
-    content:""; position:absolute; inset:0; border-radius:50%;
-    border:3px solid transparent;
-  }
-  .spinner::before {
-    border-top-color:#a855f7; border-right-color:#a855f7;
-    animation: spin 1s linear infinite;
-    box-shadow: 0 0 18px rgba(168,85,247,.4);
-  }
-  .spinner::after {
-    inset:7px;
-    border-bottom-color:#ec4899; border-left-color:#ec4899;
-    animation: spin 1.5s linear infinite reverse;
-    box-shadow: 0 0 14px rgba(236,72,153,.35);
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .overlay p {
-    font-size:14px; color:#b7a8e6; margin:0; letter-spacing:.5px;
-    animation: pulse-text 2s ease-in-out infinite;
-  }
-  @keyframes pulse-text {
-    0%,100% { opacity:.65; }
-    50%     { opacity:1; }
-  }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .overlay p { margin:0; font-size:14px; color:var(--dim); letter-spacing:.3px; text-align:center; max-width:80%; line-height:1.5; }
+  .err-actions { display:none; gap:10px; margin-top:4px; }
   .overlay.error .spinner { display:none; }
-  .overlay.error p {
-    color:#f0a0c0; font-size:15px; max-width:80%;
-    text-align:center; line-height:1.5;
-    animation: none;
+  .overlay.error p { color:#ffb4a8; font-size:15px; }
+  .overlay.error .err-actions { display:flex; }
+  .pill-btn {
+    padding:9px 18px; border-radius:999px; font-size:13px; font-weight:600; cursor:pointer;
+    background:rgba(255,255,255,.1); color:#fff; border:1px solid var(--line);
+    transition:background .15s;
   }
+  .pill-btn:hover { background:rgba(255,255,255,.18); }
+  .pill-btn.primary { background:var(--accent); color:#111; border-color:transparent; }
+  .pill-btn.primary:hover { background:#ffc83d; }
 
+  /* ── skip button ─────────────────────────────────────────── */
   .skip-btn {
-    position:absolute; right:24px; bottom:110px; z-index:12;
+    position:absolute; right:24px; bottom:112px; z-index:12;
     display:inline-flex; align-items:center; gap:8px;
-    padding:11px 20px; border-radius:12px;
-    background: linear-gradient(120deg, #a855f7, #7c3aed 60%, #ec4899);
-    background-size:200% 100%;
-    color:#fff; font-size:13.5px; font-weight:700;
-    border:1px solid rgba(168,85,247,.5);
-    cursor:pointer; font-family:inherit;
-    box-shadow: 0 8px 28px rgba(124,58,237,.55),
-                0 0 30px rgba(168,85,247,.35);
-    opacity:0; transform: translateX(20px) scale(.92);
-    pointer-events:none;
-    transition: opacity .3s ease,
-                transform .35s cubic-bezier(.34,1.56,.64,1);
-    animation: skip-shimmer 3s linear infinite;
+    padding:11px 18px; border-radius:10px; cursor:pointer;
+    background:rgba(20,20,22,.88); color:#fff; font-size:14px; font-weight:700;
+    border:1px solid rgba(255,255,255,.22);
+    backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+    opacity:0; transform:translateY(8px); pointer-events:none;
+    transition:opacity .25s ease, transform .3s var(--ease), background .15s, color .15s;
   }
-  @keyframes skip-shimmer {
-    from { background-position: 0% 0; }
-    to   { background-position: 200% 0; }
-  }
-  .skip-btn.show {
-    opacity:1; transform: translateX(0) scale(1); pointer-events:auto;
-  }
-  .skip-btn:hover {
-    box-shadow: 0 12px 40px rgba(124,58,237,.7),
-                0 0 50px rgba(168,85,247,.5);
-    transform: translateX(0) scale(1.05);
-  }
-  .skip-btn:active { transform: translateX(0) scale(.96); }
-  .skip-btn svg { width:16px; height:16px; fill:#fff; }
+  .skip-btn svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:2.2;
+                  stroke-linecap:round; stroke-linejoin:round; }
+  .skip-btn.show { opacity:1; transform:none; pointer-events:auto; }
+  .skip-btn:hover { background:#fff; color:#111; }
 
+  /* ── controls ────────────────────────────────────────────── */
   .controls {
     position:absolute; left:0; right:0; bottom:0; z-index:10;
-    padding:60px 22px 18px;
-    background: linear-gradient(0deg,
-      rgba(0,0,0,.9) 0%,
-      rgba(0,0,0,.55) 40%,
-      rgba(0,0,0,.15) 70%,
-      transparent 100%);
-    opacity:0; transform: translateY(10px);
-    transition: opacity .35s ease, transform .4s cubic-bezier(.34,1.2,.64,1);
-    pointer-events:none;
+    padding:70px 22px 14px;
+    background:linear-gradient(0deg, rgba(0,0,0,.9), rgba(0,0,0,.55) 50%, transparent);
+    opacity:0; transform:translateY(6px); pointer-events:none;
+    transition:opacity .3s ease, transform .3s var(--ease);
   }
-  .controls.visible {
-    opacity:1; transform: translateY(0); pointer-events:auto;
-  }
+  .controls.visible { opacity:1; transform:none; pointer-events:auto; }
 
+  .seek-row { display:flex; align-items:center; gap:18px; margin-bottom:4px; }
   .progress-wrap {
-    position:relative; width:100%; height:18px;
-    display:flex; align-items:center; cursor:pointer;
-    margin-bottom:8px; touch-action:none;
+    position:relative; flex:1; height:22px; display:flex; align-items:center;
+    cursor:pointer; touch-action:none;
   }
   .progress-bg {
-    position:relative; width:100%; height:4px; border-radius:4px;
-    background:rgba(255,255,255,.14); overflow:visible;
-    transition:height .18s cubic-bezier(.34,1.56,.64,1);
+    position:relative; width:100%; height:4px; border-radius:999px;
+    background:rgba(255,255,255,.22); transition:height .15s ease;
   }
-  .progress-wrap:hover .progress-bg { height:7px; }
-  .progress-buffer {
-    position:absolute; left:0; top:0; height:100%; border-radius:4px;
-    background:rgba(255,255,255,.18); width:0%;
-    transition: width .25s ease;
+  .progress-wrap:hover .progress-bg, .progress-wrap.dragging .progress-bg { height:6px; }
+  .progress-buffer, .progress-fill, .seg {
+    position:absolute; top:0; height:100%; border-radius:999px;
   }
-  .progress-fill {
-    position:absolute; left:0; top:0; height:100%; border-radius:4px;
-    background: linear-gradient(90deg,#7c3aed,#a855f7,#ec4899,#a855f7);
-    background-size: 200% 100%;
-    width:0%; box-shadow: 0 0 12px rgba(168,85,247,.6);
-    overflow:hidden; position:relative;
-    animation: fill-shift 4s linear infinite;
-  }
-  @keyframes fill-shift {
-    from { background-position: 0% 0; }
-    to   { background-position: 200% 0; }
-  }
-  .progress-fill::after {
-    content:""; position:absolute; inset:0;
-    background: linear-gradient(90deg, transparent, rgba(255,255,255,.45), transparent);
-    transform: translateX(-100%);
-    animation: fill-shimmer 2s linear infinite;
-  }
-  @keyframes fill-shimmer {
-    to { transform: translateX(100%); }
-  }
+  .progress-buffer { left:0; width:0; background:rgba(255,255,255,.28); }
+  .seg { background:var(--accent); opacity:.9; border-radius:2px; }
+  .progress-fill { left:0; width:0; background:#fff; }
   .progress-thumb {
-    position:absolute; top:50%; left:0%;
-    width:14px; height:14px; border-radius:50%;
-    background:#c4a8ff; border:2px solid #7c3aed;
-    transform: translate(-50%,-50%) scale(0);
-    transition: transform .2s cubic-bezier(.34,1.56,.64,1),
-                box-shadow .2s ease;
-    box-shadow:0 0 12px rgba(168,85,247,.7);
-    pointer-events:none;
+    position:absolute; top:50%; left:0; width:14px; height:14px; border-radius:50%;
+    background:#fff; transform:translate(-50%,-50%) scale(0); pointer-events:none;
+    transition:transform .15s var(--ease); box-shadow:0 0 0 4px rgba(255,255,255,.18);
   }
-  .progress-wrap:hover .progress-thumb,
-  .progress-wrap.dragging .progress-thumb {
-    transform: translate(-50%,-50%) scale(1);
-    box-shadow: 0 0 20px rgba(168,85,247,1), 0 0 36px rgba(168,85,247,.5);
+  .progress-wrap:hover .progress-thumb, .progress-wrap.dragging .progress-thumb {
+    transform:translate(-50%,-50%) scale(1);
   }
-
   .time-tip {
-    position:absolute; bottom:26px; left:0;
-    padding:3px 9px; border-radius:6px;
-    background: rgba(15,10,30,.92);
-    border:1px solid rgba(168,85,247,.35);
-    font-size:11px; font-weight:600; color:#e0d2ff;
-    pointer-events:none; opacity:0; transform: translateX(-50%) translateY(4px);
-    transition: opacity .15s ease, transform .15s ease;
-    white-space:nowrap;
+    position:absolute; bottom:26px; left:0; padding:4px 9px; border-radius:6px;
+    background:rgba(20,20,22,.95); border:1px solid var(--line);
+    font-size:12px; font-weight:600; font-variant-numeric:tabular-nums;
+    pointer-events:none; opacity:0; white-space:nowrap;
+    transform:translateX(-50%); transition:opacity .12s ease;
   }
-  .progress-wrap:hover .time-tip { opacity:1; transform: translateX(-50%) translateY(0); }
-
-  .btn-row { display:flex; align-items:center; gap:8px; }
-  .btn-row .spacer { flex:1; }
-
-  .ctrl {
-    background:none; border:none; padding:6px; cursor:pointer;
-    color: rgba(255,255,255,.85); border-radius:10px;
-    display:flex; align-items:center; justify-content:center;
-    transition: color .18s, background .18s,
-                transform .22s cubic-bezier(.34,1.56,.64,1),
-                box-shadow .25s;
-    position:relative;
-  }
-  .ctrl:hover {
-    color:#fff; background: rgba(168,85,247,.2);
-    transform: translateY(-2px) scale(1.1);
-    box-shadow: 0 6px 18px rgba(168,85,247,.28);
-  }
-  .ctrl:active { transform: translateY(0) scale(.9); }
-  .ctrl svg { width:22px; height:22px; fill:currentColor; pointer-events:none; }
-  .ctrl.big svg { width:28px; height:28px; }
-  .ctrl.big:hover { box-shadow: 0 6px 22px rgba(168,85,247,.5); }
-
+  .progress-wrap:hover .time-tip { opacity:1; }
   .time {
-    font-size:12.5px; font-weight:600; color: rgba(255,255,255,.78);
-    letter-spacing:.4px; font-variant-numeric: tabular-nums;
-    user-select:none; white-space:nowrap; margin:0 4px;
+    font-size:14px; font-weight:600; color:#fff; white-space:nowrap; user-select:none;
+    font-variant-numeric:tabular-nums; letter-spacing:.2px;
   }
-  .time .sep { opacity:.4; margin:0 3px; }
-  .time .dur { color: rgba(255,255,255,.45); }
+  .time .dur { color:var(--dim); }
 
-  .vol-group { display:flex; align-items:center; gap:0; }
+  .btn-row { display:flex; align-items:center; gap:2px; }
+  .btn-row .spacer { flex:1; }
+  .ctrl {
+    position:relative; display:flex; align-items:center; justify-content:center; gap:7px;
+    min-width:42px; height:42px; padding:0 9px; border:none; border-radius:10px;
+    background:transparent; color:rgba(255,255,255,.92); cursor:pointer;
+    transition:background .15s, color .15s, transform .15s;
+  }
+  .ctrl:hover { background:rgba(255,255,255,.12); color:#fff; }
+  .ctrl:active { transform:scale(.92); }
+  .ctrl.on { background:rgba(255,255,255,.16); color:#fff; }
+  .ctrl svg { width:24px; height:24px; fill:none; stroke:currentColor; stroke-width:2;
+              stroke-linecap:round; stroke-linejoin:round; display:block; pointer-events:none; flex-shrink:0; }
+  .ctrl.play svg { width:28px; height:28px; }
+  .ctrl .lbl { font-size:13px; font-weight:700; letter-spacing:.2px; }
+  .ctrl.hidden { display:none; }
+  .tag {
+    font-size:11px; font-weight:800; letter-spacing:.8px; padding:3px 7px; border-radius:5px;
+    background:var(--accent); color:#111;
+  }
+
+  .vol-group { display:flex; align-items:center; }
   .vol-slider-wrap {
-    width:0; overflow:hidden;
-    transition: width .3s cubic-bezier(.4,0,.2,1);
-    display:flex; align-items:center; height:28px;
+    width:0; overflow:hidden; display:flex; align-items:center; height:34px;
+    transition:width .25s var(--ease);
   }
-  .vol-group:hover .vol-slider-wrap,
-  .vol-group.open .vol-slider-wrap { width:96px; }
+  .vol-group:hover .vol-slider-wrap, .vol-group:focus-within .vol-slider-wrap { width:96px; }
   .vol-slider-wrap input[type=range] {
-    -webkit-appearance:none; appearance:none;
-    width:86px; height:4px; border-radius:4px; margin-left:6px;
-    background: linear-gradient(90deg,#a855f7 var(--vol,100%),
-                                       rgba(255,255,255,.18) var(--vol,100%));
-    outline:none; cursor:pointer;
-    transition: filter .2s;
+    -webkit-appearance:none; appearance:none; width:84px; height:4px; border-radius:999px;
+    margin:0 6px 0 4px; outline:none; cursor:pointer;
+    background:linear-gradient(90deg, #fff var(--vol,100%), rgba(255,255,255,.25) var(--vol,100%));
   }
-  .vol-slider-wrap input[type=range]:hover { filter: brightness(1.2); }
   .vol-slider-wrap input[type=range]::-webkit-slider-thumb {
-    -webkit-appearance:none; width:14px; height:14px; border-radius:50%;
-    background:#c4a8ff; border:2px solid #7c3aed;
-    box-shadow:0 0 10px rgba(168,85,247,.7);
-    cursor:pointer; transition: transform .15s;
-  }
-  .vol-slider-wrap input[type=range]::-webkit-slider-thumb:hover {
-    transform: scale(1.15);
+    -webkit-appearance:none; width:13px; height:13px; border-radius:50%; background:#fff; border:none;
   }
   .vol-slider-wrap input[type=range]::-moz-range-thumb {
-    width:14px; height:14px; border-radius:50%;
-    background:#c4a8ff; border:2px solid #7c3aed; cursor:pointer;
+    width:13px; height:13px; border-radius:50%; background:#fff; border:none;
   }
 
+  /* ── center flash ────────────────────────────────────────── */
   .center-flash {
-    position:absolute; top:50%; left:50%;
-    width:78px; height:78px; border-radius:50%;
-    background: rgba(10,8,20,.55); backdrop-filter: blur(8px);
-    border:1px solid rgba(168,85,247,.45);
-    display:flex; align-items:center; justify-content:center;
-    opacity:0; pointer-events:none; z-index:9;
-    transform: translate(-50%,-50%) scale(.7);
-    box-shadow: 0 0 40px rgba(168,85,247,.35);
+    position:absolute; top:50%; left:50%; width:78px; height:78px; border-radius:50%;
+    background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center;
+    opacity:0; pointer-events:none; z-index:9; transform:translate(-50%,-50%) scale(.8);
   }
-  .center-flash.show {
-    animation: flash-pop .45s cubic-bezier(.34,1.56,.64,1) forwards;
-  }
+  .center-flash.show { animation:flash-pop .45s ease-out forwards; }
   @keyframes flash-pop {
-    0%   { opacity:0; transform: translate(-50%,-50%) scale(.6); }
-    45%  { opacity:1; transform: translate(-50%,-50%) scale(1.1); }
-    100% { opacity:1; transform: translate(-50%,-50%) scale(1); }
+    0%   { opacity:0; transform:translate(-50%,-50%) scale(.8); }
+    35%  { opacity:1; transform:translate(-50%,-50%) scale(1); }
+    100% { opacity:0; transform:translate(-50%,-50%) scale(1.25); }
   }
-  .center-flash svg { width:38px; height:38px; fill:#fff; }
+  .center-flash svg { width:36px; height:36px; fill:#fff; stroke:none; }
 
-  .settings-panel {
-    position:absolute; right:22px; bottom:80px; z-index:15;
-    width:264px; max-height:70vh; overflow-y:auto;
-    background: rgba(12,9,24,.94); backdrop-filter: blur(20px);
-    border:1px solid rgba(168,85,247,.25);
-    border-radius:16px; padding:6px;
-    box-shadow: 0 20px 60px rgba(0,0,0,.7),
-                0 0 40px rgba(124,58,237,.18);
-    opacity:0; transform: translateY(14px) scale(.94);
-    pointer-events:none;
-    transition: opacity .25s ease,
-                transform .3s cubic-bezier(.34,1.56,.64,1);
-    scrollbar-width:thin;
-    scrollbar-color: rgba(168,85,247,.35) transparent;
-    transform-origin: bottom right;
+  /* ── popup menus (audio / episodes / captions / settings) ── */
+  .menu {
+    position:absolute; bottom:84px; right:22px; z-index:15;
+    width:270px; max-width:calc(100vw - 16px); max-height:min(62vh, 440px); overflow-y:auto;
+    background:var(--menu-bg);
+    backdrop-filter:blur(20px) saturate(1.3); -webkit-backdrop-filter:blur(20px) saturate(1.3);
+    border:1px solid var(--line); border-radius:14px; padding:6px;
+    box-shadow:0 18px 50px rgba(0,0,0,.6);
+    opacity:0; transform:translateY(8px) scale(.97); pointer-events:none;
+    transform-origin:bottom right;
+    transition:opacity .18s ease, transform .22s var(--ease);
+    scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.25) transparent;
   }
-  .settings-panel.open {
-    opacity:1; transform: translateY(0) scale(1); pointer-events:auto;
+  .menu.open { opacity:1; transform:none; pointer-events:auto; }
+  .menu::-webkit-scrollbar { width:6px; }
+  .menu::-webkit-scrollbar-thumb { background:rgba(255,255,255,.22); border-radius:3px; }
+  .menu-head {
+    font-size:11px; font-weight:800; letter-spacing:1.4px; text-transform:uppercase;
+    color:var(--dim); padding:10px 12px 6px;
   }
-  .settings-panel::-webkit-scrollbar { width:6px; }
-  .settings-panel::-webkit-scrollbar-thumb {
-    background: rgba(168,85,247,.35); border-radius:3px;
+  .menu-sec + .menu-sec { border-top:1px solid var(--line); margin-top:4px; padding-top:2px; }
+  .m-item {
+    display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:9px;
+    font-size:14px; font-weight:500; cursor:pointer; user-select:none; color:rgba(255,255,255,.9);
+    transition:background .12s;
   }
+  .m-item:hover { background:rgba(255,255,255,.1); }
+  .m-item .grow { flex:1; min-width:0; }
+  .m-item .name { font-weight:600; }
+  .m-item .sub { font-size:12px; color:var(--dim); margin-top:1px; }
+  .m-item .val { font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  .m-item .chk { width:18px; height:18px; flex-shrink:0; stroke:var(--accent); fill:none;
+                 stroke-width:3; stroke-linecap:round; stroke-linejoin:round; opacity:0; }
+  .m-item.active { color:#fff; }
+  .m-item.active .chk { opacity:1; }
+  .m-item.disabled { opacity:.45; pointer-events:none; }
 
-  .set-section { padding:4px 0; }
-  .set-section + .set-section { border-top:1px solid rgba(255,255,255,.06); }
-  .set-label {
-    font-size:10.5px; font-weight:700; letter-spacing:1.4px;
-    text-transform:uppercase; color: rgba(180,160,230,.65);
-    padding:10px 12px 6px;
+  .ep-grid { display:grid; grid-template-columns:repeat(5, 1fr); gap:6px; padding:4px 6px 8px; }
+  .ep {
+    height:38px; border-radius:8px; border:1px solid var(--line); background:rgba(255,255,255,.05);
+    color:#fff; font-size:13px; font-weight:600; cursor:pointer; font-variant-numeric:tabular-nums;
+    transition:background .12s, border-color .12s;
   }
-  .set-item {
-    display:flex; align-items:center; justify-content:space-between;
-    padding:9px 12px; border-radius:10px; cursor:pointer;
-    font-size:13px; font-weight:500; color: rgba(255,255,255,.85);
-    transition: background .18s, color .18s,
-                transform .18s cubic-bezier(.34,1.56,.64,1);
-    user-select:none;
-  }
-  .set-item:hover {
-    background: rgba(168,85,247,.16); color:#fff;
-    transform: translateX(3px);
-  }
-  .set-item.active {
-    color:#d8c4ff; background: rgba(168,85,247,.12);
-  }
-  .set-item.active::before {
-    content:""; width:6px; height:6px; border-radius:50%;
-    background:#a855f7; box-shadow: 0 0 10px #a855f7;
-    margin-right:8px; flex-shrink:0;
-    animation: dot-pulse 1.8s ease-in-out infinite;
-  }
-  @keyframes dot-pulse {
-    0%,100% { box-shadow: 0 0 8px #a855f7; }
-    50%     { box-shadow: 0 0 16px #a855f7, 0 0 24px rgba(168,85,247,.6); }
-  }
-  .set-item .val {
-    font-size:11.5px; color: rgba(200,185,255,.55); font-weight:600;
-  }
-  .set-item.active .val { color:#a855f7; }
+  .ep:hover { background:rgba(255,255,255,.14); }
+  .ep.active { background:var(--accent); border-color:var(--accent); color:#111; }
 
+  /* ── toast ───────────────────────────────────────────────── */
   .toast {
-    position:absolute; bottom:88px; left:50%;
-    padding:9px 20px; border-radius:12px;
-    background: rgba(15,10,30,.9); backdrop-filter: blur(12px);
-    border:1px solid rgba(168,85,247,.35);
-    font-size:12.5px; font-weight:600; color:#e0d2ff;
-    opacity:0; pointer-events:none; z-index:25;
-    transition: opacity .3s ease;
-    white-space:nowrap;
-    transform: translateX(-50%);
-    box-shadow: 0 8px 30px rgba(0,0,0,.55);
+    position:absolute; bottom:120px; left:50%; padding:9px 18px; border-radius:10px;
+    background:rgba(20,20,22,.92); border:1px solid var(--line);
+    font-size:13px; font-weight:600; white-space:nowrap;
+    opacity:0; pointer-events:none; z-index:25; transform:translateX(-50%);
+    transition:opacity .25s ease;
   }
-  .toast.show {
-    opacity:1;
-    animation: toast-pop .4s cubic-bezier(.34,1.56,.64,1);
-  }
-  @keyframes toast-pop {
-    0%   { transform: translateX(-50%) translateY(12px) scale(.9); opacity:0; }
-    60%  { transform: translateX(-50%) translateY(-3px) scale(1.03); opacity:1; }
-    100% { transform: translateX(-50%) translateY(0) scale(1); opacity:1; }
-  }
+  .toast.show { opacity:1; }
 
-  @media (max-width:600px) {
-    .controls { padding:50px 12px 12px; }
-    .settings-panel { right:12px; width: calc(100vw - 24px); bottom:74px; }
+  /* ── mobile ──────────────────────────────────────────────── */
+  @media (max-width:700px) {
+    .controls { padding:60px 10px 8px; }
+    .topbar { padding:14px 110px 56px 14px; }
+    .title { font-size:15px; }
+    .subtitle { font-size:12px; }
     .brand { top:12px; right:14px; }
-    .brand-mark { width:28px; height:28px; }
-    .brand-text { font-size:13px; }
-    .skip-btn { right:12px; bottom:96px; padding:9px 15px; font-size:12.5px; }
+    .brand img { width:22px; height:22px; }
+    .brand span { font-size:13px; }
+    .seek-row { gap:10px; }
+    .time { font-size:12px; }
+    .ctrl { min-width:36px; height:38px; padding:0 6px; }
+    .ctrl svg { width:22px; height:22px; }
+    .ctrl.play svg { width:26px; height:26px; }
+    .skip-btn { right:14px; bottom:100px; padding:9px 14px; font-size:13px; }
+    .vol-slider-wrap { display:none; }
+    .toast { bottom:104px; }
+    #btnPip { display:none; }
+    .ctrl .lbl { display:none; }
+  }
+  @media (max-width:420px) {
+    #btnBack, #btnFwd { display:none; }
+    .time .dur, .time .sep { display:none; }
   }
 </style>
 </head>
@@ -798,83 +678,114 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
 <div id="stage">
   <video id="video" playsinline crossorigin="anonymous"></video>
 
+  <div class="topbar" id="topbar">
+    <div class="title" id="title">Loading…</div>
+    <div class="subtitle" id="subtitle"></div>
+  </div>
+
   <div class="brand" id="brand">
-    <div class="brand-mark"><img src="https://media1.tenor.com/m/fSskkWtbhHIAAAAC/delta-eminence-in-shadow.gif" alt="ThyAnime"/></div>
-    <div class="brand-text">ThyAnime</div>
+    <img src="https://media1.tenor.com/m/fSskkWtbhHIAAAAC/delta-eminence-in-shadow.gif" alt="">
+    <span>Thy<b>Anime</b></span>
   </div>
 
   <button class="skip-btn" id="skipBtn">
-    <svg viewBox="0 0 24 24"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>
+    <svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
     <span id="skipLabel">Skip Intro</span>
   </button>
 
-  <div class="center-flash" id="flash">
-    <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-  </div>
+  <div class="center-flash" id="flash"><svg viewBox="0 0 24 24" id="flashSvg"></svg></div>
 
   <div class="overlay" id="overlay">
     <div class="spinner"></div>
     <p id="overlayMsg">Resolving stream…</p>
+    <div class="err-actions">
+      <button class="pill-btn primary" id="errRetry">Retry</button>
+      <button class="pill-btn" id="errOther">Try dub</button>
+    </div>
   </div>
 
   <div class="toast" id="toast"></div>
 
-  <div class="settings-panel" id="settings">
-    <div class="set-section">
-      <div class="set-label">Quality</div>
+  <!-- Audio: Sub / Dub -->
+  <div class="menu" id="menuAudio">
+    <div class="menu-head">Audio</div>
+    <div id="audioList"></div>
+  </div>
+
+  <!-- Episodes -->
+  <div class="menu" id="menuEps" style="width:318px">
+    <div class="menu-head" id="epsHead">Episodes</div>
+    <div class="ep-grid" id="epGrid"></div>
+  </div>
+
+  <!-- Captions -->
+  <div class="menu" id="menuSubs">
+    <div class="menu-head">Subtitles</div>
+    <div id="subList"></div>
+  </div>
+
+  <!-- Settings -->
+  <div class="menu" id="menuSet">
+    <div class="menu-sec">
+      <div class="menu-head">Quality</div>
       <div id="qualityList"></div>
     </div>
-    <div class="set-section">
-      <div class="set-label">Speed</div>
+    <div class="menu-sec">
+      <div class="menu-head">Speed</div>
       <div id="speedList"></div>
-    </div>
-    <div class="set-section" id="subSection" style="display:none">
-      <div class="set-label">Subtitles</div>
-      <div id="subList"></div>
     </div>
   </div>
 
   <div class="controls" id="controls">
-    <div class="progress-wrap" id="progressWrap">
-      <div class="progress-bg">
-        <div class="progress-buffer" id="progressBuffer"></div>
-        <div class="progress-fill" id="progressFill"></div>
-        <div class="progress-thumb" id="progressThumb"></div>
+    <div class="seek-row">
+      <div class="progress-wrap" id="progressWrap">
+        <div class="progress-bg" id="progressBg">
+          <div class="progress-buffer" id="progressBuffer"></div>
+          <div id="segLayer"></div>
+          <div class="progress-fill" id="progressFill"></div>
+          <div class="progress-thumb" id="progressThumb"></div>
+        </div>
+        <div class="time-tip" id="timeTip">0:00</div>
       </div>
-      <div class="time-tip" id="timeTip">0:00</div>
+      <div class="time"><span id="curTime">0:00</span><span class="sep"> / </span><span class="dur" id="durTime">0:00</span></div>
     </div>
 
     <div class="btn-row">
-      <button class="ctrl big" id="btnPlay" title="Play / Pause (Space)">
-        <svg viewBox="0 0 24 24" id="iconPlay"><path d="M8 5v14l11-7z"/></svg>
-      </button>
+      <button class="ctrl play" id="btnPlay" title="Play / Pause (Space)"><svg viewBox="0 0 24 24" id="iconPlay"></svg></button>
       <button class="ctrl" id="btnBack" title="Back 10s (←)">
-        <svg viewBox="0 0 24 24"><path d="M11.99 5V1l-5 5 5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6h-2c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
+        <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><text x="12" y="15.4" font-size="7.2" font-weight="800" text-anchor="middle" fill="currentColor" stroke="none">10</text></svg>
       </button>
       <button class="ctrl" id="btnFwd" title="Forward 10s (→)">
-        <svg viewBox="0 0 24 24"><path d="M12.01 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/></svg>
+        <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><text x="12" y="15.4" font-size="7.2" font-weight="800" text-anchor="middle" fill="currentColor" stroke="none">10</text></svg>
       </button>
       <div class="vol-group" id="volGroup">
-        <button class="ctrl" id="btnMute" title="Mute (M)">
-          <svg viewBox="0 0 24 24" id="iconVol"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
-        </button>
-        <div class="vol-slider-wrap">
-          <input type="range" id="volSlider" min="0" max="1" step="0.02" value="1">
-        </div>
+        <button class="ctrl" id="btnMute" title="Mute (M)"><svg viewBox="0 0 24 24" id="iconVol"></svg></button>
+        <div class="vol-slider-wrap"><input type="range" id="volSlider" min="0" max="1" step="0.02" value="1"></div>
       </div>
-      <div class="time">
-        <span id="curTime">0:00</span><span class="sep">/</span><span class="dur" id="durTime">0:00</span>
-      </div>
+
       <div class="spacer"></div>
-      <button class="ctrl" id="btnSettings" title="Settings">
-        <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 00-.48-.41h-3.84a.48.48 0 00-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+
+      <button class="ctrl hidden" id="btnNext" title="Next episode (N)">
+        <svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+      </button>
+      <button class="ctrl hidden" id="btnEps" title="Episodes">
+        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+        <span class="lbl">Episodes</span>
+      </button>
+      <button class="ctrl" id="btnAudio" title="Sub / Dub">
+        <svg viewBox="0 0 24 24"><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"/></svg>
+        <span class="tag" id="audioTag">SUB</span>
+      </button>
+      <button class="ctrl hidden" id="btnCc" title="Subtitles (C)">
+        <svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M7 11h4M13 11h4M7 15h2.5M12.5 15H17"/></svg>
+      </button>
+      <button class="ctrl" id="btnSettings" title="Quality &amp; speed">
+        <svg viewBox="0 0 24 24"><line x1="21" y1="4" x2="14" y2="4"/><line x1="10" y1="4" x2="3" y2="4"/><line x1="21" y1="12" x2="12" y2="12"/><line x1="8" y1="12" x2="3" y2="12"/><line x1="21" y1="20" x2="16" y2="20"/><line x1="12" y1="20" x2="3" y2="20"/><line x1="14" y1="2" x2="14" y2="6"/><line x1="8" y1="10" x2="8" y2="14"/><line x1="16" y1="18" x2="16" y2="22"/></svg>
       </button>
       <button class="ctrl" id="btnPip" title="Picture-in-Picture (P)">
-        <svg viewBox="0 0 24 24"><path d="M19 11h-8v6h8v-6zm4 8V4.98C23 3.88 22.1 3 21 3H3c-1.1 0-2 .88-2 1.98V19c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2zm-2 .02H3V4.97h18v14.05z"/></svg>
+        <svg viewBox="0 0 24 24"><path d="M21 9V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4"/><rect x="12" y="13" width="10" height="7" rx="1.5"/></svg>
       </button>
-      <button class="ctrl" id="btnFs" title="Fullscreen (F)">
-        <svg viewBox="0 0 24 24" id="iconFs"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
-      </button>
+      <button class="ctrl" id="btnFs" title="Fullscreen (F)"><svg viewBox="0 0 24 24" id="iconFs"></svg></button>
     </div>
   </div>
 </div>
@@ -886,129 +797,259 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
 const ANILIST_ID = __ANILIST__;
 const EPISODE    = __EPISODE__;
 const LANG       = __LANG__;
+const OTHER      = LANG === 'sub' ? 'dub' : 'sub';
+const START_AT   = (function(){
+  const v = parseFloat(new URLSearchParams(location.search).get('t'));
+  return isFinite(v) && v > 0 ? v : 0;
+})();
 
-const video     = document.getElementById('video');
-const stageEl   = document.getElementById('stage');
-const overlay   = document.getElementById('overlay');
-const overlayMsg= document.getElementById('overlayMsg');
-const controls  = document.getElementById('controls');
-const settings  = document.getElementById('settings');
-const progressW = document.getElementById('progressWrap');
-const pFill     = document.getElementById('progressFill');
-const pBuf      = document.getElementById('progressBuffer');
-const pThumb    = document.getElementById('progressThumb');
-const timeTip   = document.getElementById('timeTip');
-const curTime   = document.getElementById('curTime');
-const durTime   = document.getElementById('durTime');
-const btnPlay   = document.getElementById('btnPlay');
-const iconPlay  = document.getElementById('iconPlay');
-const btnMute   = document.getElementById('btnMute');
-const iconVol   = document.getElementById('iconVol');
-const volSlider = document.getElementById('volSlider');
-const btnFs     = document.getElementById('btnFs');
-const iconFs    = document.getElementById('iconFs');
-const flash     = document.getElementById('flash');
-const toastEl   = document.getElementById('toast');
-const skipBtn   = document.getElementById('skipBtn');
-const skipLabel = document.getElementById('skipLabel');
-const brandEl   = document.getElementById('brand');
+const $ = id => document.getElementById(id);
+const video = $('video'), stageEl = $('stage'), overlay = $('overlay'), overlayMsg = $('overlayMsg');
+const controls = $('controls'), topbar = $('topbar'), brandEl = $('brand');
+const progressW = $('progressWrap'), pFill = $('progressFill'), pBuf = $('progressBuffer');
+const pThumb = $('progressThumb'), timeTip = $('timeTip'), segLayer = $('segLayer');
+const curTime = $('curTime'), durTime = $('durTime');
+const btnPlay = $('btnPlay'), btnMute = $('btnMute'), volSlider = $('volSlider');
+const btnFs = $('btnFs'), btnNext = $('btnNext'), btnEps = $('btnEps');
+const btnAudio = $('btnAudio'), btnCc = $('btnCc'), btnSettings = $('btnSettings');
+const flash = $('flash'), toastEl = $('toast'), skipBtn = $('skipBtn'), skipLabel = $('skipLabel');
 
-const ICON_PLAY  = 'M8 5v14l11-7z';
-const ICON_PAUSE = 'M6 19h4V5H6v14zm8-14v14h4V5h-4z';
-const VOL_HIGH = 'M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z';
-const VOL_MUTE = 'M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 003.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z';
+/* ── icons ── */
+const I = {
+  play:  '<polygon points="7 4 20 12 7 20 7 4" fill="currentColor" stroke="none"/>',
+  pause: '<rect x="6" y="4" width="4.5" height="16" rx="1.2" fill="currentColor" stroke="none"/><rect x="13.5" y="4" width="4.5" height="16" rx="1.2" fill="currentColor" stroke="none"/>',
+  volHigh: '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>',
+  volLow:  '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>',
+  volMute: '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/>',
+  fsEnter: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
+  fsExit:  '<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>',
+  chk: '<svg class="chk" viewBox="0 0 24 24"><polyline points="4 12 10 18 20 6"/></svg>'
+};
+function setIcon(el, key){ el.innerHTML = I[key]; }
+setIcon($('iconPlay'), 'play'); setIcon($('iconVol'), 'volHigh'); setIcon($('iconFs'), 'fsEnter');
 
 let hls = null, hideTimer = null, dragging = false, subTracks = [], toastTimer = null;
+let skipSegments = [], activeSkip = null;
+let totalEps = 0, animeTitle = '';
 
-brandEl.addEventListener('animationend', function(e){
-  if(e.animationName === 'brand-in'){
-    brandEl.style.animation = 'none';
+function fmt(s){
+  if(!isFinite(s) || s < 0) s = 0; s = Math.floor(s);
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = s%60;
+  return h > 0 ? h+':'+String(m).padStart(2,'0')+':'+String(sec).padStart(2,'0')
+               : m+':'+String(sec).padStart(2,'0');
+}
+function showToast(msg){
+  toastEl.textContent = msg; toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>toastEl.classList.remove('show'), 1400);
+}
+function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function go(ep, lang, t){
+  let u = '/embed/' + ANILIST_ID + '/' + ep + '/' + lang;
+  if(t && t > 5) u += '?t=' + Math.floor(t);
+  location.href = u;
+}
+
+function fail(msg){
+  overlay.classList.remove('hidden');
+  overlay.classList.add('error');
+  overlayMsg.textContent = msg;
+}
+$('errRetry').onclick = ()=> location.reload();
+$('errOther').textContent = 'Try ' + OTHER;
+$('errOther').onclick = ()=> go(EPISODE, OTHER, 0);
+
+/* ── title / meta ── */
+function paintTitle(){
+  $('title').textContent = animeTitle || 'ThyAnime';
+  $('subtitle').textContent = 'Episode ' + EPISODE + (totalEps ? ' of ' + totalEps : '') + '  ·  ' + LANG.toUpperCase();
+  document.title = (animeTitle ? animeTitle + ' — ' : '') + 'Episode ' + EPISODE;
+}
+$('audioTag').textContent = LANG.toUpperCase();
+paintTitle();
+
+async function loadMeta(){
+  try{
+    const r = await fetch('/api/anime/' + ANILIST_ID);
+    if(!r.ok) return;
+    const m = await r.json();
+    const t = m.title || {};
+    animeTitle = t.english || t.romaji || t.native || '';
+    totalEps = m.episodes || (m.nextAiringEpisode && m.nextAiringEpisode.episode ? m.nextAiringEpisode.episode - 1 : 0) || 0;
+    paintTitle();
+    buildEpisodes();
+  }catch(e){ console.warn('[meta]', e.message); }
+}
+
+/* ── controls visibility ── */
+function anyMenuOpen(){ return !!document.querySelector('.menu.open'); }
+function showControls(){
+  controls.classList.add('visible'); topbar.classList.add('visible');
+  brandEl.classList.remove('idle'); stageEl.classList.remove('cursor-hidden');
+  clearTimeout(hideTimer); hideTimer = setTimeout(hideControls, 3000);
+}
+function hideControls(){
+  if(video.paused || anyMenuOpen() || dragging) return;
+  controls.classList.remove('visible'); topbar.classList.remove('visible');
+  brandEl.classList.add('idle'); stageEl.classList.add('cursor-hidden');
+}
+
+/* ── menus ── */
+const MENUS = {
+  audio:{ btn:btnAudio,   el:$('menuAudio') },
+  eps:  { btn:btnEps,     el:$('menuEps') },
+  subs: { btn:btnCc,      el:$('menuSubs') },
+  set:  { btn:btnSettings, el:$('menuSet') }
+};
+function closeMenus(){
+  Object.values(MENUS).forEach(m => { m.el.classList.remove('open'); m.btn.classList.remove('on'); });
+}
+function toggleMenu(key){
+  const m = MENUS[key], wasOpen = m.el.classList.contains('open');
+  closeMenus();
+  if(wasOpen) return;
+  const r = m.btn.getBoundingClientRect();
+  if(window.innerWidth <= 700){ m.el.style.left = '8px'; m.el.style.right = '8px'; m.el.style.width = 'auto'; }
+  else {
+    m.el.style.left = 'auto';
+    m.el.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+    if(key !== 'eps') m.el.style.width = '';
   }
+  m.el.classList.add('open'); m.btn.classList.add('on');
+  clearTimeout(hideTimer);
+}
+Object.keys(MENUS).forEach(k => MENUS[k].btn.addEventListener('click', e => { e.stopPropagation(); toggleMenu(k); }));
+document.addEventListener('click', e => {
+  if(!e.target.closest('.menu')) closeMenus();
 });
 
-let skipSegments = [];
-let activeSkip = null;
-
-function fmt(s){ if(!isFinite(s)||s<0) s=0; s=Math.floor(s);
-  const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), sec=s%60;
-  return h>0?h+':'+String(m).padStart(2,'0')+':'+String(sec).padStart(2,'0')
-            :m+':'+String(sec).padStart(2,'0'); }
-function showToast(msg){ toastEl.textContent=msg;
-  toastEl.classList.remove('show');
-  void toastEl.offsetWidth;
-  toastEl.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer=setTimeout(()=>toastEl.classList.remove('show'),1500); }
-function fail(msg){ overlay.classList.remove('hidden'); overlay.classList.add('error');
-  overlayMsg.textContent=msg; }
-
-function showControls(){ controls.classList.add('visible');
-  brandEl.classList.remove('idle');
-  stageEl.classList.remove('cursor-hidden');
-  clearTimeout(hideTimer); hideTimer=setTimeout(hideControls,3000); }
-function hideControls(){ if(video.paused) return;
-  if(settings.classList.contains('open')) return; if(dragging) return;
-  controls.classList.remove('visible');
-  brandEl.classList.add('idle');
-  stageEl.classList.add('cursor-hidden'); }
-
-function togglePlay(){ if(video.paused) video.play().catch(()=>{}); else video.pause(); }
-function flashIcon(d){
-  flash.querySelector('svg path').setAttribute('d',d);
-  flash.classList.remove('show');
-  void flash.offsetWidth;
-  flash.classList.add('show');
-  setTimeout(()=>flash.classList.remove('show'), 500);
+/* Audio (Sub / Dub) */
+function buildAudio(){
+  const list = $('audioList'); list.innerHTML = '';
+  [['sub','Sub','Original audio'], ['dub','Dub','English audio']].forEach(([key, name, desc])=>{
+    const it = document.createElement('div');
+    it.className = 'm-item' + (key === LANG ? ' active' : '');
+    it.innerHTML = '<div class="grow"><div class="name">' + name + '</div><div class="sub">' + desc + '</div></div>' +
+                   '<span class="val">MegaPlay</span>' + I.chk;
+    it.onclick = ()=>{
+      if(key === LANG){ closeMenus(); return; }
+      showToast('Switching to ' + name + '…');
+      go(EPISODE, key, video.currentTime || 0);
+    };
+    list.appendChild(it);
+  });
 }
+buildAudio();
+
+/* Episodes + Next */
+function buildEpisodes(){
+  if(!totalEps || totalEps < 2) return;
+  btnEps.classList.remove('hidden');
+  $('epsHead').textContent = 'Episodes · ' + totalEps;
+  const grid = $('epGrid'); grid.innerHTML = '';
+  for(let n = 1; n <= totalEps; n++){
+    const b = document.createElement('button');
+    b.className = 'ep' + (n === EPISODE ? ' active' : '');
+    b.textContent = n;
+    b.onclick = ()=>{ if(n !== EPISODE) go(n, LANG, 0); else closeMenus(); };
+    grid.appendChild(b);
+  }
+  if(EPISODE < totalEps) btnNext.classList.remove('hidden');
+  btnEps.addEventListener('click', ()=>{
+    const a = grid.querySelector('.active'); if(a) setTimeout(()=>a.scrollIntoView({block:'center'}), 30);
+  });
+}
+btnNext.addEventListener('click', ()=>{ if(EPISODE < totalEps) go(EPISODE + 1, LANG, 0); });
+
+/* ── play / pause ── */
+function togglePlay(){ if(video.paused) video.play().catch(()=>{}); else video.pause(); }
+function flashIcon(key){
+  $('flashSvg').innerHTML = I[key];
+  flash.classList.remove('show'); void flash.offsetWidth; flash.classList.add('show');
+}
+function syncPlayIcon(){ setIcon($('iconPlay'), video.paused ? 'play' : 'pause'); }
 btnPlay.addEventListener('click', togglePlay);
-video.addEventListener('click', togglePlay);
-video.addEventListener('dblclick', toggleFs);
-video.addEventListener('play', ()=>{ iconPlay.setAttribute('d',ICON_PAUSE); showControls(); });
-video.addEventListener('pause',()=>{ iconPlay.setAttribute('d',ICON_PLAY); showControls(); });
 
-function pctFromEvent(e){ const r=progressW.getBoundingClientRect();
-  const x=(e.touches?e.touches[0].clientX:e.clientX)-r.left;
-  return Math.min(1,Math.max(0,x/r.width)); }
-function seekTo(p){ if(video.duration) video.currentTime=p*video.duration; }
-progressW.addEventListener('mousedown', e=>{ dragging=true; progressW.classList.add('dragging'); seekTo(pctFromEvent(e)); });
-window.addEventListener('mousemove', e=>{ if(dragging) seekTo(pctFromEvent(e));
-  else if(e.target===progressW||progressW.contains(e.target)){ const p=pctFromEvent(e);
-    timeTip.style.left=(p*100)+'%'; timeTip.textContent=fmt(p*(video.duration||0)); } });
-window.addEventListener('mouseup', ()=>{ if(dragging){ dragging=false; progressW.classList.remove('dragging'); } });
-progressW.addEventListener('touchstart', e=>{ dragging=true; seekTo(pctFromEvent(e)); }, {passive:true});
-progressW.addEventListener('touchmove', e=>{ if(dragging) seekTo(pctFromEvent(e)); }, {passive:true});
-progressW.addEventListener('touchend', ()=>{ dragging=false; });
+let clickTimer = null;
+video.addEventListener('click', ()=>{
+  if(anyMenuOpen()){ closeMenus(); return; }
+  if(window.matchMedia('(hover:none)').matches && !controls.classList.contains('visible')){ showControls(); return; }
+  clearTimeout(clickTimer);
+  clickTimer = setTimeout(()=>{ togglePlay(); flashIcon(video.paused ? 'play' : 'pause'); }, 220);
+});
+video.addEventListener('dblclick', ()=>{ clearTimeout(clickTimer); toggleFs(); });
+video.addEventListener('play',  ()=>{ syncPlayIcon(); showControls(); });
+video.addEventListener('pause', ()=>{ syncPlayIcon(); showControls(); });
+video.addEventListener('playing', syncPlayIcon);
+video.addEventListener('ended', syncPlayIcon);
+video.addEventListener('waiting', ()=>{ /* buffering */ });
 
-function updateProgress(){ if(dragging) return;
-  const d=video.duration||0, c=video.currentTime||0, p=d?(c/d)*100:0;
-  pFill.style.width=p+'%'; pThumb.style.left=p+'%'; curTime.textContent=fmt(c); }
+/* ── seek bar ── */
+function pctFromEvent(e){
+  const r = progressW.getBoundingClientRect();
+  const x = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
+  return Math.min(1, Math.max(0, x / r.width));
+}
+function seekTo(p){ if(video.duration) video.currentTime = p * video.duration; }
+function paintProgress(p){ pFill.style.width = (p*100)+'%'; pThumb.style.left = (p*100)+'%'; }
+progressW.addEventListener('mousedown', e=>{
+  dragging = true; progressW.classList.add('dragging');
+  const p = pctFromEvent(e); seekTo(p); paintProgress(p);
+});
+window.addEventListener('mousemove', e=>{
+  if(dragging){ const p = pctFromEvent(e); seekTo(p); paintProgress(p); curTime.textContent = fmt(p*(video.duration||0)); }
+  else if(progressW.contains(e.target)){
+    const p = pctFromEvent(e);
+    timeTip.style.left = (p*100)+'%';
+    timeTip.textContent = fmt(p*(video.duration||0));
+  }
+});
+window.addEventListener('mouseup', ()=>{ if(dragging){ dragging = false; progressW.classList.remove('dragging'); } });
+progressW.addEventListener('touchstart', e=>{ dragging = true; const p = pctFromEvent(e); seekTo(p); paintProgress(p); }, {passive:true});
+progressW.addEventListener('touchmove',  e=>{ if(dragging){ const p = pctFromEvent(e); seekTo(p); paintProgress(p); } }, {passive:true});
+progressW.addEventListener('touchend',   ()=>{ dragging = false; });
+
+function updateProgress(){
+  if(dragging) return;
+  const d = video.duration || 0, c = video.currentTime || 0;
+  paintProgress(d ? c/d : 0);
+  curTime.textContent = fmt(c);
+}
 video.addEventListener('timeupdate', updateProgress);
-video.addEventListener('durationchange', ()=>{ durTime.textContent=fmt(video.duration||0); });
-video.addEventListener('progress', ()=>{ if(!video.buffered.length||!video.duration) return;
-  const end=video.buffered.end(video.buffered.length-1);
-  pBuf.style.width=(end/video.duration*100)+'%'; });
+video.addEventListener('durationchange', ()=>{ durTime.textContent = fmt(video.duration||0); renderSegs(); });
+video.addEventListener('progress', ()=>{
+  if(!video.buffered.length || !video.duration) return;
+  pBuf.style.width = (video.buffered.end(video.buffered.length-1) / video.duration * 100) + '%';
+});
 
+/* ── skip intro / outro (+ amber markers on the bar) ── */
 function skipLabelFor(type){
   if(type === 'op' || type === 'mixed-op') return 'Skip Intro';
   if(type === 'ed' || type === 'mixed-ed') return 'Skip Outro';
   if(type === 'recap') return 'Skip Recap';
   return 'Skip';
 }
-
+function renderSegs(){
+  segLayer.innerHTML = '';
+  const d = video.duration;
+  if(!d || !isFinite(d)) return;
+  skipSegments.forEach(s=>{
+    const el = document.createElement('div');
+    el.className = 'seg';
+    el.style.left  = (s.start / d * 100) + '%';
+    el.style.width = (Math.max(0, s.end - s.start) / d * 100) + '%';
+    segLayer.appendChild(el);
+  });
+}
 function checkSkip(){
   const t = video.currentTime;
   const seg = skipSegments.find(s => t >= s.start && t < s.end);
   if(seg){
-    activeSkip = seg;
-    skipLabel.textContent = skipLabelFor(seg.type);
-    skipBtn.classList.add('show');
-  } else {
-    activeSkip = null;
-    skipBtn.classList.remove('show');
-  }
+    activeSkip = seg; skipLabel.textContent = skipLabelFor(seg.type); skipBtn.classList.add('show');
+  } else { activeSkip = null; skipBtn.classList.remove('show'); }
 }
 video.addEventListener('timeupdate', checkSkip);
-
 skipBtn.addEventListener('click', ()=>{
   if(activeSkip){
     video.currentTime = activeSkip.end;
@@ -1017,260 +1058,235 @@ skipBtn.addEventListener('click', ()=>{
     activeSkip = null;
   }
 });
-
 function whenDurationKnown(){
   return new Promise(resolve => {
-    if(video.duration && isFinite(video.duration) && video.duration > 0){
-      return resolve(video.duration);
-    }
+    if(video.duration && isFinite(video.duration) && video.duration > 0) return resolve(video.duration);
     const onDur = () => {
       if(video.duration && isFinite(video.duration) && video.duration > 0){
-        video.removeEventListener('durationchange', onDur);
-        resolve(video.duration);
+        video.removeEventListener('durationchange', onDur); resolve(video.duration);
       }
     };
     video.addEventListener('durationchange', onDur);
-    setTimeout(() => {
+    setTimeout(()=>{
       video.removeEventListener('durationchange', onDur);
       resolve(video.duration && isFinite(video.duration) ? video.duration : 0);
     }, 8000);
   });
 }
-
 async function loadSkipTimes(){
   try{
     const dur = await whenDurationKnown();
-    if(!dur || dur <= 0 || !isFinite(dur)){
-      console.log('[skip] unknown episode length — cannot query AniSkip');
-      return;
-    }
-    const url = '/api/skip/' + ANILIST_ID + '/' + EPISODE +
-                '?length=' + dur.toFixed(3);
-    console.log('[skip] fetching', url);
-    const r = await fetch(url);
-    if(!r.ok){
-      console.warn('[skip] /api/skip returned', r.status);
-      return;
-    }
+    if(!dur || dur <= 0 || !isFinite(dur)) return;
+    const r = await fetch('/api/skip/' + ANILIST_ID + '/' + EPISODE + '?length=' + dur.toFixed(3));
+    if(!r.ok) return;
     const data = await r.json();
     if(data && data.found && Array.isArray(data.results)){
       skipSegments = data.results
         .filter(x => x && x.interval && typeof x.interval.startTime === 'number')
-        .map(x => ({
-          start: x.interval.startTime,
-          end: x.interval.endTime,
-          type: x.skipType || 'op'
-        }));
-      console.log('[skip] loaded', skipSegments.length, 'segments', skipSegments);
-    } else {
-      console.log('[skip] no skip data for this episode', data);
+        .map(x => ({ start:x.interval.startTime, end:x.interval.endTime, type:x.skipType || 'op' }));
+      renderSegs();
     }
   }catch(e){ console.warn('[skip] unavailable:', e.message); }
 }
 
-let lastVol=1;
-function applyVol(v){ video.volume=v; video.muted=v===0; volSlider.value=v;
-  volSlider.style.setProperty('--vol',(v*100)+'%'); updateVolIcon(); }
-function updateVolIcon(){ iconVol.querySelector('path').setAttribute('d',
-  (video.muted||video.volume===0)?VOL_MUTE:VOL_HIGH); }
-volSlider.addEventListener('input', ()=>{ lastVol=parseFloat(volSlider.value); applyVol(lastVol); });
-btnMute.addEventListener('click', ()=>{ if(video.muted||video.volume===0) applyVol(lastVol||0.6);
-  else { lastVol=video.volume; applyVol(0); } });
+/* ── volume ── */
+let lastVol = 1;
+function loadVol(){ try{ const v = parseFloat(localStorage.getItem('thy_vol')); if(isFinite(v) && v >= 0 && v <= 1) return v; }catch(e){} return 1; }
+function applyVol(v){
+  video.volume = v; video.muted = v === 0;
+  volSlider.value = v; volSlider.style.setProperty('--vol', (v*100)+'%');
+  updateVolIcon();
+  try{ localStorage.setItem('thy_vol', String(v)); }catch(e){}
+}
+function updateVolIcon(){
+  const v = video.muted ? 0 : video.volume;
+  setIcon($('iconVol'), v === 0 ? 'volMute' : (v < 0.5 ? 'volLow' : 'volHigh'));
+}
+volSlider.addEventListener('input', ()=>{ lastVol = parseFloat(volSlider.value); applyVol(lastVol); });
+btnMute.addEventListener('click', ()=>{
+  if(video.muted || video.volume === 0) applyVol(lastVol || 0.6);
+  else { lastVol = video.volume; applyVol(0); }
+});
 video.addEventListener('volumechange', updateVolIcon);
-applyVol(1);
+lastVol = loadVol() || 1;
+applyVol(loadVol());
 
-function toggleFs(){ const d=document;
-  if(!d.fullscreenElement){ const el=document.getElementById('stage');
-    (el.requestFullscreen||el.webkitRequestFullscreen).call(el); }
-  else (d.exitFullscreen||d.webkitExitFullscreen).call(d); }
+/* ── fullscreen / pip ── */
+function toggleFs(){
+  if(!document.fullscreenElement && !document.webkitFullscreenElement){
+    (stageEl.requestFullscreen || stageEl.webkitRequestFullscreen).call(stageEl);
+  } else {
+    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  }
+}
 btnFs.addEventListener('click', toggleFs);
-document.addEventListener('fullscreenchange', ()=>{ const fs=!!document.fullscreenElement;
-  iconFs.querySelector('path').setAttribute('d',
-    fs?'M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z'
-      :'M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z'); });
+document.addEventListener('fullscreenchange', ()=> setIcon($('iconFs'), document.fullscreenElement ? 'fsExit' : 'fsEnter'));
+$('btnPip').addEventListener('click', async ()=>{
+  try{
+    if(document.pictureInPictureElement) await document.exitPictureInPicture();
+    else await video.requestPictureInPicture();
+  }catch(e){ showToast('PiP unavailable'); }
+});
 
-document.getElementById('btnPip').addEventListener('click', async ()=>{
-  try { if(document.pictureInPictureElement) await document.exitPictureInPicture();
-        else await video.requestPictureInPicture(); }
-  catch(e){ showToast('PiP unavailable'); } });
+/* ── quality / speed ── */
+function row(label, val, active, onclick){
+  const it = document.createElement('div');
+  it.className = 'm-item' + (active ? ' active' : '');
+  it.innerHTML = '<div class="grow"><div class="name">' + esc(label) + '</div></div>' +
+                 (val ? '<span class="val">' + esc(val) + '</span>' : '') + I.chk;
+  it.onclick = onclick;
+  return it;
+}
+function buildQualityList(){
+  const list = $('qualityList'); list.innerHTML = '';
+  if(!hls || !hls.levels || hls.levels.length < 2){
+    list.innerHTML = '<div class="m-item disabled"><div class="grow"><div class="name">Single quality</div></div></div>';
+    return;
+  }
+  list.appendChild(row('Auto', 'ABR', hls.currentLevel === -1, ()=>{ hls.currentLevel = -1; buildQualityList(); showToast('Quality: Auto'); }));
+  hls.levels.map((l,i)=>({l,i})).sort((a,b)=>(b.l.height||0)-(a.l.height||0)).forEach(({l,i})=>{
+    const name = l.height ? l.height+'p' : 'Level '+i;
+    list.appendChild(row(name, Math.round((l.bitrate||0)/1000)+'k', hls.currentLevel === i,
+      ()=>{ hls.currentLevel = i; buildQualityList(); showToast('Quality: ' + name); }));
+  });
+}
+const SPEEDS = [0.25,0.5,0.75,1,1.25,1.5,1.75,2];
+function buildSpeedList(){
+  const list = $('speedList'); list.innerHTML = '';
+  SPEEDS.forEach(s=>{
+    list.appendChild(row(s + '×', s === 1 ? 'Normal' : '', Math.abs(video.playbackRate - s) < 0.01,
+      ()=>{ video.playbackRate = s; buildSpeedList(); showToast('Speed: ' + s + '×'); }));
+  });
+}
 
-document.getElementById('btnSettings').addEventListener('click', e=>{
-  e.stopPropagation(); settings.classList.toggle('open');
-  if(settings.classList.contains('open')) clearTimeout(hideTimer); });
-document.addEventListener('click', e=>{
-  if(!settings.contains(e.target) && !document.getElementById('btnSettings').contains(e.target))
-    settings.classList.remove('open'); });
-
-function buildQualityList(){ const list=document.getElementById('qualityList'); list.innerHTML='';
-  if(!hls||!hls.levels||hls.levels.length<2){
-    list.innerHTML='<div class="set-item" style="opacity:.45;pointer-events:none">Single quality</div>'; return; }
-  const auto=document.createElement('div');
-  auto.className='set-item'+(hls.currentLevel===-1?' active':'');
-  auto.innerHTML='<span>Auto</span><span class="val">ABR</span>';
-  auto.onclick=()=>{ hls.currentLevel=-1; buildQualityList(); showToast('Quality: Auto'); };
-  list.appendChild(auto);
-  hls.levels.map((l,i)=>({l,i})).sort((a,b)=>(b.l.height||0)-(a.l.height||0))
-    .forEach(({l,i})=>{ const item=document.createElement('div');
-      item.className='set-item'+(hls.currentLevel===i?' active':'');
-      item.innerHTML='<span>'+(l.height?l.height+'p':'Level '+i)+'</span>'+
-                     '<span class="val">'+Math.round((l.bitrate||0)/1000)+'k</span>';
-      item.onclick=()=>{ hls.currentLevel=i; buildQualityList();
-        showToast('Quality: '+(l.height?l.height+'p':'Level '+i)); };
-      list.appendChild(item); }); }
-
-const SPEEDS=[0.25,0.5,0.75,1,1.25,1.5,1.75,2];
-function buildSpeedList(){ const list=document.getElementById('speedList'); list.innerHTML='';
-  const cur=video.playbackRate;
-  SPEEDS.forEach(s=>{ const item=document.createElement('div');
-    item.className='set-item'+(Math.abs(cur-s)<0.01?' active':'');
-    item.innerHTML='<span>'+s+'×</span>'+(s===1?'<span class="val">Normal</span>':'');
-    item.onclick=()=>{ video.playbackRate=s; buildSpeedList(); showToast('Speed: '+s+'×'); };
-    list.appendChild(item); }); }
-
+/* ── subtitles ── */
 function _onlyOneShowing(active){
-  subTracks.forEach(t => {
-    if(t !== active && t.mode === 'showing'){
-      try { t.mode = 'disabled'; } catch(e){}
-    }
-  });
+  subTracks.forEach(t => { if(t !== active && t.mode === 'showing'){ try{ t.mode = 'disabled'; }catch(e){} } });
 }
-
 function buildSubList(){
-  const sec=document.getElementById('subSection');
-  const list=document.getElementById('subList');
-  if(!subTracks.length){ sec.style.display='none'; return; }
-  sec.style.display=''; list.innerHTML='';
-  const off=document.createElement('div');
-  off.className='set-item'+(subTracks.every(t=>t.mode!=='showing')?' active':'');
-  off.innerHTML='<span>Off</span>';
-  off.onclick=()=>{
-    subTracks.forEach(t=>{ try { t.mode='disabled'; } catch(e){} });
-    buildSubList();
-    showToast('Subtitles: Off');
-  };
-  list.appendChild(off);
+  const list = $('subList');
+  if(!subTracks.length){ btnCc.classList.add('hidden'); return; }
+  btnCc.classList.remove('hidden');
+  list.innerHTML = '';
+  list.appendChild(row('Off', '', subTracks.every(t=>t.mode !== 'showing'), ()=>{
+    subTracks.forEach(t=>{ try{ t.mode = 'disabled'; }catch(e){} });
+    buildSubList(); showToast('Subtitles: Off');
+  }));
   subTracks.forEach((t,i)=>{
-    const item=document.createElement('div');
-    item.className='set-item'+(t.mode==='showing'?' active':'');
-    item.innerHTML='<span>'+(t.label||('Track '+(i+1)))+'</span>'+
-                   '<span class="val">'+(t.language||'')+'</span>';
-    item.onclick=()=>{
-      subTracks.forEach(x=>{ try { x.mode='disabled'; } catch(e){} });
-      try { t.mode='showing'; } catch(e){}
-      _onlyOneShowing(t);
-      buildSubList();
-      showToast('Subtitles: '+(t.label||'Track'));
-    };
-    list.appendChild(item);
+    list.appendChild(row(t.label || ('Track '+(i+1)), t.language || '', t.mode === 'showing', ()=>{
+      subTracks.forEach(x=>{ try{ x.mode = 'disabled'; }catch(e){} });
+      try{ t.mode = 'showing'; }catch(e){}
+      _onlyOneShowing(t); buildSubList(); showToast('Subtitles: ' + (t.label || 'Track'));
+    }));
   });
 }
-
 function addSubtitles(subs){
   video.querySelectorAll('track').forEach(t=>t.remove());
   subTracks = [];
-
   if(!subs || !subs.length){ buildSubList(); return; }
-
   subs.forEach((s,i)=>{
-    const t=document.createElement('track');
-    t.kind='subtitles';
-    t.label=s.lang || ('Track '+(i+1));
-    t.srclang=((s.lang||'und').slice(0,2)||'und').toLowerCase();
-    t.src=s.url;
-    t.default = false;
+    const t = document.createElement('track');
+    t.kind = 'subtitles';
+    t.label = s.lang || ('Track '+(i+1));
+    t.srclang = ((s.lang||'und').slice(0,2)||'und').toLowerCase();
+    t.src = s.url; t.default = false;
     video.appendChild(t);
   });
-
-  const want = subs.length;
-  let tries = 0;
+  const want = subs.length; let tries = 0;
   (function waitTracks(){
     tries++;
     const list = Array.from(video.textTracks);
-    if(list.length >= want || tries > 40){
-      finalize(list);
-    } else {
-      setTimeout(waitTracks, 50);
-    }
+    if(list.length >= want || tries > 40) finalize(list); else setTimeout(waitTracks, 50);
   })();
-
   function finalize(list){
     subTracks = list;
-    subTracks.forEach(t => { try { t.mode='disabled'; } catch(e){} });
-    subTracks.forEach(t => {
-      t.addEventListener('change', () => {
-        if(t.mode === 'showing') _onlyOneShowing(t);
-      });
-    });
+    subTracks.forEach(t=>{ try{ t.mode = 'disabled'; }catch(e){} });
+    subTracks.forEach(t=> t.addEventListener('change', ()=>{ if(t.mode === 'showing') _onlyOneShowing(t); }));
     const isEng = t => {
-      const lab=(t.label||'').toLowerCase();
-      const lng=(t.language||'').toLowerCase();
+      const lab = (t.label||'').toLowerCase(), lng = (t.language||'').toLowerCase();
       return lng.startsWith('en') || lab.includes('english') || lab.includes('eng');
     };
     const preferred = subTracks.find(isEng) || subTracks[0];
-    if(preferred){
-      try { preferred.mode='showing'; _onlyOneShowing(preferred); } catch(e){}
-    }
+    if(preferred){ try{ preferred.mode = 'showing'; _onlyOneShowing(preferred); }catch(e){} }
     buildSubList();
   }
 }
 
+/* ── keyboard ── */
 document.addEventListener('keydown', e=>{
-  if(['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) return;
+  if(['INPUT','TEXTAREA'].includes(document.activeElement.tagName) && document.activeElement.type !== 'range') return;
   switch(e.key){
-    case ' ': case 'k': e.preventDefault(); togglePlay(); flashIcon(video.paused?ICON_PAUSE:ICON_PLAY); break;
-    case 'ArrowLeft': e.preventDefault(); video.currentTime=Math.max(0,video.currentTime-10); showToast('⏪ 10s'); break;
-    case 'ArrowRight': e.preventDefault(); video.currentTime=Math.min(video.duration||0,video.currentTime+10); showToast('10s ⏩'); break;
-    case 'ArrowUp': e.preventDefault(); applyVol(Math.min(1,video.volume+0.05)); break;
-    case 'ArrowDown': e.preventDefault(); applyVol(Math.max(0,video.volume-0.05)); break;
+    case ' ': case 'k': case 'K':
+      e.preventDefault(); togglePlay(); flashIcon(video.paused ? 'pause' : 'play'); break;
+    case 'ArrowLeft':  e.preventDefault(); video.currentTime = Math.max(0, video.currentTime-10); showToast('−10s'); break;
+    case 'ArrowRight': e.preventDefault(); video.currentTime = Math.min(video.duration||0, video.currentTime+10); showToast('+10s'); break;
+    case 'ArrowUp':    e.preventDefault(); applyVol(Math.min(1, video.volume+0.05)); break;
+    case 'ArrowDown':  e.preventDefault(); applyVol(Math.max(0, video.volume-0.05)); break;
     case 'm': case 'M': btnMute.click(); break;
     case 'f': case 'F': toggleFs(); break;
-    case 'p': case 'P': document.getElementById('btnPip').click(); break;
-    case 'Escape': settings.classList.remove('open'); break; } });
+    case 'p': case 'P': $('btnPip').click(); break;
+    case 'n': case 'N': if(!btnNext.classList.contains('hidden')) btnNext.click(); break;
+    case 'c': case 'C': if(!btnCc.classList.contains('hidden')) btnCc.click(); break;
+    case 'Escape': closeMenus(); break;
+  }
+  showControls();
+});
+$('btnBack').addEventListener('click', ()=>{ video.currentTime = Math.max(0, video.currentTime-10); showToast('−10s'); });
+$('btnFwd').addEventListener('click',  ()=>{ video.currentTime = Math.min(video.duration||0, video.currentTime+10); showToast('+10s'); });
 
-document.getElementById('btnBack').addEventListener('click', ()=>{
-  video.currentTime=Math.max(0,video.currentTime-10); showToast('⏪ 10s'); });
-document.getElementById('btnFwd').addEventListener('click', ()=>{
-  video.currentTime=Math.min(video.duration||0,video.currentTime+10); showToast('10s ⏩'); });
-
-let lastMove=0;
-function activity(){ const now=Date.now(); if(now-lastMove<120) return; lastMove=now; showControls(); }
+/* ── activity ── */
+let lastMove = 0;
+function activity(){ const now = Date.now(); if(now - lastMove < 120) return; lastMove = now; showControls(); }
 stageEl.addEventListener('mousemove', activity);
 stageEl.addEventListener('touchstart', activity, {passive:true});
-stageEl.addEventListener('mouseleave', ()=>{ if(!video.paused){
-  controls.classList.remove('visible');
-  brandEl.classList.add('idle');
-  stageEl.classList.add('cursor-hidden');
-} });
+stageEl.addEventListener('mouseleave', ()=>{
+  if(!video.paused && !anyMenuOpen()){
+    controls.classList.remove('visible'); topbar.classList.remove('visible');
+    brandEl.classList.add('idle'); stageEl.classList.add('cursor-hidden');
+  }
+});
 
+/* ── playback ── */
+function onReady(subs){
+  overlay.classList.add('hidden');
+  addSubtitles(subs); buildQualityList(); buildSpeedList(); loadSkipTimes();
+  video.play().catch(()=>{});
+  syncPlayIcon(); showControls();
+}
 function attach(src, subs){
   if(window.Hls && Hls.isSupported()){
-    hls=new Hls({ enableWorker:true, lowLatencyMode:false, startLevel:-1 });
+    hls = new Hls({ enableWorker:true, lowLatencyMode:false, startLevel:-1, startPosition: START_AT || -1 });
     hls.loadSource(src); hls.attachMedia(video);
-    hls.on(Hls.Events.MANIFEST_PARSED, ()=>{ overlay.classList.add('hidden');
-      addSubtitles(subs); buildQualityList(); buildSpeedList();
-      loadSkipTimes();
-      video.play().catch(()=>{}); showControls(); });
-    hls.on(Hls.Events.LEVEL_SWITCHED, ()=>buildQualityList());
-    hls.on(Hls.Events.ERROR, (_,data)=>{ if(data&&data.fatal)
-      fail('Playback error: '+data.type+' / '+data.details); });
+    hls.on(Hls.Events.MANIFEST_PARSED, ()=> onReady(subs));
+    hls.on(Hls.Events.LEVEL_SWITCHED, ()=> buildQualityList());
+    hls.on(Hls.Events.ERROR, (_,data)=>{
+      if(data && data.fatal) fail('Playback error: ' + data.type + ' / ' + data.details);
+    });
   } else if(video.canPlayType('application/vnd.apple.mpegurl')){
-    video.src=src;
-    video.addEventListener('loadedmetadata', ()=>{ overlay.classList.add('hidden');
-      addSubtitles(subs); buildSpeedList();
-      loadSkipTimes();
-      video.play().catch(()=>{}); showControls(); }, {once:true});
-    video.addEventListener('error', ()=>fail('Native playback error'));
-  } else fail('HLS is not supported in this browser.'); }
+    video.src = src;
+    video.addEventListener('loadedmetadata', ()=>{
+      if(START_AT) video.currentTime = START_AT;
+      onReady(subs);
+    }, {once:true});
+    video.addEventListener('error', ()=> fail('Native playback error'));
+  } else {
+    fail('HLS is not supported in this browser.');
+  }
+}
 
 (async function init(){
-  try { overlayMsg.textContent='Resolving stream…';
-    const r=await fetch('/api/resolve/'+ANILIST_ID+'/'+EPISODE+'/'+LANG);
-    if(!r.ok){ const err=await r.json().catch(()=>({}));
-      return fail(err.error||('Resolve failed ('+r.status+')')); }
-    const data=await r.json();
-    overlayMsg.textContent='Loading segments…';
-    attach(data.m3u8, data.subtitles||[]);
-  } catch(e){ fail('Network error: '+e.message); }
+  loadMeta();
+  try{
+    overlayMsg.textContent = 'Resolving stream…';
+    const r = await fetch('/api/resolve/' + ANILIST_ID + '/' + EPISODE + '/' + LANG);
+    if(!r.ok){
+      const err = await r.json().catch(()=>({}));
+      return fail((err.error || ('Resolve failed (' + r.status + ')')) + (LANG === 'dub' ? ' — a dub may not be available for this episode.' : ''));
+    }
+    const data = await r.json();
+    overlayMsg.textContent = 'Loading…';
+    attach(data.m3u8, data.subtitles || []);
+  }catch(e){ fail('Network error: ' + e.message); }
 })();
 })();
 </script>
@@ -1734,18 +1750,6 @@ class Handler(BaseHTTPRequestHandler):
 #  CLOUDFLARE TOKEN TUNNEL
 # ═══════════════════════════════════════════════════════════════
 def start_token_tunnel() -> Optional[str]:
-    """Run cloudflared using the Zero Trust tunnel token.
-
-    The token embeds the tunnel ID + secret. All ingress routes
-    (hostname → local service) come from the Zero Trust dashboard.
-
-    Readiness is determined by cloudflared's own log output —
-    when it prints "Registered tunnel connection", the tunnel is up.
-    We do NOT rely on the local machine's DNS resolver being able to
-    reach the public hostname, because that's frequently broken
-    (stale cache, split-horizon DNS, DoH-only browsers, etc.) even
-    when the tunnel itself works perfectly.
-    """
     global _CLOUDFLARED_PROC
 
     if not shutil.which("cloudflared"):
@@ -1758,12 +1762,9 @@ def start_token_tunnel() -> Optional[str]:
         print("  \033[90m│\033[0m  cloudflared  \033[31mno TUNNEL_TOKEN set\033[0m")
         return None
 
-    # Reset readiness state from any previous run
     _CLOUDFLARED_CONNECTED.clear()
     _CLOUDFLARED_CONN_COUNT["value"] = 0
 
-    # cloudflared reads the token via env var so it never appears in argv
-    # (which is visible in `ps` / Task Manager to other users).
     env = os.environ.copy()
     env["TUNNEL_TOKEN"] = TUNNEL_TOKEN
 
@@ -1780,7 +1781,6 @@ def start_token_tunnel() -> Optional[str]:
         print(f"  \033[90m│\033[0m  cloudflared  \033[31mspawn failed: {e}\033[0m")
         return None
 
-    # Wait a moment and check it didn't immediately die
     time.sleep(3)
     if proc.poll() is not None:
         out = ""
@@ -1798,7 +1798,6 @@ def start_token_tunnel() -> Optional[str]:
         try:
             for line in p.stdout:
                 low = line.lower()
-                # The single definitive signal that the tunnel is live:
                 if "registered tunnel connection" in low:
                     _CLOUDFLARED_CONN_COUNT["value"] += 1
                     _CLOUDFLARED_CONNECTED.set()
@@ -1814,15 +1813,7 @@ def start_token_tunnel() -> Optional[str]:
 
     return f"https://{PUBLIC_HOSTNAME}" if PUBLIC_HOSTNAME else None
 
-# ── optional HTTP verification (best-effort, non-blocking) ──
 def verify_tunnel(url: str, retries: int = 5, delay: int = 3) -> bool:
-    """Try to reach the tunnel's /__thy endpoint.
-
-    This is BEST-EFFORT and non-blocking for readiness — the tunnel
-    is considered up as soon as cloudflared reports a registered
-    connection. This function exists purely to give an extra green
-    checkmark when the local machine's DNS happens to cooperate.
-    """
     fp = url.rstrip("/") + "/__thy"
     for i in range(retries):
         try:
@@ -1839,12 +1830,6 @@ def verify_tunnel(url: str, retries: int = 5, delay: int = 3) -> bool:
     return False
 
 def tunnel_watchdog(url: str):
-    """Periodically check the tunnel; restart if cloudflared dies.
-
-    Health is judged by whether the cloudflared process is still
-    alive, NOT by outbound HTTP — DNS from this machine may be
-    broken while the tunnel is perfectly fine.
-    """
     while True:
         time.sleep(90)
         if _CLOUDFLARED_PROC is None or _CLOUDFLARED_PROC.poll() is not None:
@@ -1904,16 +1889,10 @@ def main():
             print()
             print(f"  \033[90m│\033[0m  \033[1;36m{PUBLIC_HOSTNAME}\033[0m  →  \033[1;36m{docs_url}\033[0m")
 
-            # Wait for cloudflared to report a registered connection.
-            # This is the real readiness signal — it does not depend
-            # on the local machine's DNS resolver.
             print(f"  \033[90m│\033[0m  waiting for cloudflared to register…")
             connected = _CLOUDFLARED_CONNECTED.wait(timeout=60)
 
             if connected:
-                # Bonus: try an HTTP round-trip so we can print an
-                # extra ✓ when the local resolver cooperates. Never
-                # blocks readiness.
                 if verify_tunnel(public_url, retries=3, delay=2):
                     print(f"  \033[90m│\033[0m  tunnel verified \033[32m✓\033[0m")
                 else:
