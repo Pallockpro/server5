@@ -400,7 +400,10 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>ThyAnime</title>
 <style>
   :root {
@@ -409,20 +412,43 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
     --line:rgba(255,255,255,.10);
     --dim:rgba(255,255,255,.62);
     --ease:cubic-bezier(.2,.8,.2,1);
+    --sat:env(safe-area-inset-top, 0px);
+    --sab:env(safe-area-inset-bottom, 0px);
+    --sal:env(safe-area-inset-left, 0px);
+    --sar:env(safe-area-inset-right, 0px);
   }
   *, *::before, *::after { box-sizing:border-box; }
   html, body { margin:0; padding:0; height:100%; background:#000; overflow:hidden;
                font-family:'Inter','Segoe UI',system-ui,-apple-system,sans-serif;
-               color:#fff; -webkit-font-smoothing:antialiased; }
+               color:#fff; -webkit-font-smoothing:antialiased;
+               -webkit-tap-highlight-color:transparent;
+               overscroll-behavior:none; }
+  @supports (height: 100dvh) {
+    html, body { height:100dvh; }
+  }
   button { font-family:inherit; }
   #stage { position:fixed; inset:0; background:#000; }
   #stage.cursor-hidden, #stage.cursor-hidden * { cursor:none !important; }
-  video { width:100%; height:100%; display:block; background:#000; outline:none; }
+  video { width:100%; height:100%; display:block; background:#000; outline:none;
+          object-fit:contain; }
   video::cue { background:rgba(0,0,0,.65); color:#fff; font-family:inherit; }
+
+  /* ── CSS-based fullscreen fallback (iOS Safari & others without the Fullscreen API) ── */
+  #stage.fake-fs {
+    position:fixed !important;
+    inset:0 !important;
+    width:100vw !important;
+    height:100vh !important;
+    height:100dvh !important;
+    z-index:999999 !important;
+    background:#000 !important;
+  }
+  #stage.fake-fs video { width:100% !important; height:100% !important; object-fit:contain; }
 
   /* ── watermark ───────────────────────────────────────────── */
   .brand {
-    position:absolute; top:18px; right:22px; z-index:8;
+    position:absolute; top:calc(18px + var(--sat)); right:calc(22px + var(--sar));
+    z-index:8;
     display:flex; align-items:center; gap:9px;
     pointer-events:none; user-select:none;
     opacity:.55; transition:opacity .6s ease;
@@ -439,7 +465,7 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
   /* ── top bar (title) ─────────────────────────────────────── */
   .topbar {
     position:absolute; left:0; right:0; top:0; z-index:9;
-    padding:20px 150px 70px 24px;
+    padding:calc(20px + var(--sat)) calc(150px + var(--sar)) 70px calc(24px + var(--sal));
     background:linear-gradient(180deg, rgba(0,0,0,.75), rgba(0,0,0,.35) 55%, transparent);
     opacity:0; transition:opacity .3s ease; pointer-events:none;
   }
@@ -477,7 +503,8 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
 
   /* ── skip button ─────────────────────────────────────────── */
   .skip-btn {
-    position:absolute; right:24px; bottom:112px; z-index:12;
+    position:absolute; right:calc(24px + var(--sar));
+    bottom:calc(112px + var(--sab)); z-index:12;
     display:inline-flex; align-items:center; gap:8px;
     padding:11px 18px; border-radius:10px; cursor:pointer;
     background:rgba(20,20,22,.88); color:#fff; font-size:14px; font-weight:700;
@@ -494,7 +521,7 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
   /* ── controls ────────────────────────────────────────────── */
   .controls {
     position:absolute; left:0; right:0; bottom:0; z-index:10;
-    padding:70px 22px 14px;
+    padding:70px calc(22px + var(--sar)) calc(14px + var(--sab)) calc(22px + var(--sal));
     background:linear-gradient(0deg, rgba(0,0,0,.9), rgba(0,0,0,.55) 50%, transparent);
     opacity:0; transform:translateY(6px); pointer-events:none;
     transition:opacity .3s ease, transform .3s var(--ease);
@@ -594,7 +621,7 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
 
   /* ── popup menus (audio / episodes / captions / settings) ── */
   .menu {
-    position:absolute; bottom:84px; right:22px; z-index:15;
+    position:absolute; bottom:calc(84px + var(--sab)); right:calc(22px + var(--sar)); z-index:15;
     width:270px; max-width:calc(100vw - 16px); max-height:min(62vh, 440px); overflow-y:auto;
     background:var(--menu-bg);
     backdrop-filter:blur(20px) saturate(1.3); -webkit-backdrop-filter:blur(20px) saturate(1.3);
@@ -640,7 +667,7 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
 
   /* ── toast ───────────────────────────────────────────────── */
   .toast {
-    position:absolute; bottom:120px; left:50%; padding:9px 18px; border-radius:10px;
+    position:absolute; bottom:calc(120px + var(--sab)); left:50%; padding:9px 18px; border-radius:10px;
     background:rgba(20,20,22,.92); border:1px solid var(--line);
     font-size:13px; font-weight:600; white-space:nowrap;
     opacity:0; pointer-events:none; z-index:25; transform:translateX(-50%);
@@ -650,23 +677,24 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
 
   /* ── mobile ──────────────────────────────────────────────── */
   @media (max-width:700px) {
-    .controls { padding:60px 10px 8px; }
-    .topbar { padding:14px 110px 56px 14px; }
+    .controls { padding:60px calc(10px + var(--sar)) calc(8px + var(--sab)) calc(10px + var(--sal)); }
+    .topbar { padding:calc(14px + var(--sat)) calc(110px + var(--sar)) 56px calc(14px + var(--sal)); }
     .title { font-size:15px; }
     .subtitle { font-size:12px; }
-    .brand { top:12px; right:14px; }
+    .brand { top:calc(12px + var(--sat)); right:calc(14px + var(--sar)); }
     .brand img { width:22px; height:22px; }
     .brand span { font-size:13px; }
     .seek-row { gap:10px; }
     .time { font-size:12px; }
-    .ctrl { min-width:36px; height:38px; padding:0 6px; }
+    .ctrl { min-width:38px; height:40px; padding:0 6px; }
     .ctrl svg { width:22px; height:22px; }
     .ctrl.play svg { width:26px; height:26px; }
-    .skip-btn { right:14px; bottom:100px; padding:9px 14px; font-size:13px; }
+    .skip-btn { right:calc(14px + var(--sar)); bottom:calc(100px + var(--sab)); padding:9px 14px; font-size:13px; }
     .vol-slider-wrap { display:none; }
-    .toast { bottom:104px; }
+    .toast { bottom:calc(104px + var(--sab)); }
     #btnPip { display:none; }
     .ctrl .lbl { display:none; }
+    .menu { bottom:calc(76px + var(--sab)); right:calc(10px + var(--sar)); }
   }
   @media (max-width:420px) {
     #btnBack, #btnFwd { display:none; }
@@ -676,7 +704,7 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
 </head>
 <body>
 <div id="stage">
-  <video id="video" playsinline crossorigin="anonymous"></video>
+  <video id="video" playsinline webkit-playsinline x5-playsinline crossorigin="anonymous"></video>
 
   <div class="topbar" id="topbar">
     <div class="title" id="title">Loading…</div>
@@ -813,6 +841,13 @@ const btnPlay = $('btnPlay'), btnMute = $('btnMute'), volSlider = $('volSlider')
 const btnFs = $('btnFs'), btnNext = $('btnNext'), btnEps = $('btnEps');
 const btnAudio = $('btnAudio'), btnCc = $('btnCc'), btnSettings = $('btnSettings');
 const flash = $('flash'), toastEl = $('toast'), skipBtn = $('skipBtn'), skipLabel = $('skipLabel');
+
+const IS_TOUCH = (function(){
+  return (window.matchMedia && window.matchMedia('(hover:none) and (pointer:coarse)').matches)
+      || ('ontouchstart' in window && navigator.maxTouchPoints > 0);
+})();
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+               (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 /* ── icons ── */
 const I = {
@@ -971,19 +1006,53 @@ function flashIcon(key){
 function syncPlayIcon(){ setIcon($('iconPlay'), video.paused ? 'play' : 'pause'); }
 btnPlay.addEventListener('click', togglePlay);
 
-let clickTimer = null;
-video.addEventListener('click', ()=>{
-  if(anyMenuOpen()){ closeMenus(); return; }
-  if(window.matchMedia('(hover:none)').matches && !controls.classList.contains('visible')){ showControls(); return; }
-  clearTimeout(clickTimer);
-  clickTimer = setTimeout(()=>{ togglePlay(); flashIcon(video.paused ? 'play' : 'pause'); }, 220);
-});
-video.addEventListener('dblclick', ()=>{ clearTimeout(clickTimer); toggleFs(); });
+/* ── tap / click behaviour ──────────────────────────────────
+   Desktop: single-click = play/pause, double-click = fullscreen
+   Touch:   single-tap  = show controls (or play/pause),
+            double-tap  = fullscreen (matches native mobile UX) */
+if(IS_TOUCH){
+  let _tapStartX = 0, _tapStartY = 0, _tapTimer = null, _tapCount = 0;
+  video.addEventListener('touchstart', e=>{
+    const t = e.touches[0];
+    _tapStartX = t.clientX; _tapStartY = t.clientY;
+  }, {passive:true});
+  video.addEventListener('touchend', e=>{
+    const t = e.changedTouches[0];
+    if(!t) return;
+    // Was this a swipe? Ignore.
+    if(Math.abs(t.clientX - _tapStartX) > 15 || Math.abs(t.clientY - _tapStartY) > 15) return;
+    _tapCount++;
+    if(_tapCount === 1){
+      _tapTimer = setTimeout(()=>{
+        _tapCount = 0;
+        if(anyMenuOpen()){ closeMenus(); return; }
+        // First tap when controls are hidden → reveal controls (don't toggle play)
+        if(!controls.classList.contains('visible') && !video.paused){ showControls(); return; }
+        // Otherwise toggle play/pause
+        togglePlay(); flashIcon(video.paused ? 'play' : 'pause');
+        showControls();
+      }, 260);
+    } else {
+      clearTimeout(_tapTimer);
+      _tapCount = 0;
+      // Double-tap → fullscreen (custom handler covers iOS Safari)
+      toggleFs();
+    }
+  }, {passive:true});
+} else {
+  let clickTimer = null;
+  video.addEventListener('click', ()=>{
+    if(anyMenuOpen()){ closeMenus(); return; }
+    clearTimeout(clickTimer);
+    clickTimer = setTimeout(()=>{ togglePlay(); flashIcon(video.paused ? 'play' : 'pause'); }, 220);
+  });
+  video.addEventListener('dblclick', ()=>{ clearTimeout(clickTimer); toggleFs(); });
+}
+
 video.addEventListener('play',  ()=>{ syncPlayIcon(); showControls(); });
 video.addEventListener('pause', ()=>{ syncPlayIcon(); showControls(); });
 video.addEventListener('playing', syncPlayIcon);
 video.addEventListener('ended', syncPlayIcon);
-video.addEventListener('waiting', ()=>{ /* buffering */ });
 
 /* ── seek bar ── */
 function pctFromEvent(e){
@@ -1111,16 +1180,86 @@ video.addEventListener('volumechange', updateVolIcon);
 lastVol = loadVol() || 1;
 applyVol(loadVol());
 
-/* ── fullscreen / pip ── */
+/* ── fullscreen (desktop + Android + iOS Safari) ──────────────
+   Desktop & Android Chrome: use the standard Fullscreen API on #stage.
+   iOS Safari: requestFullscreen is undefined on elements, so we fall
+   back to a CSS "fake fullscreen" that keeps our custom controls
+   (including the Skip Intro button) working.
+   If the browser exposes the API but rejects the request (user
+   gesture lost, Permissions Policy, etc.) we also drop to the CSS
+   fallback instead of throwing. */
+let _fakeFs = false;
+function _nativeFsActive(){
+  return !!(document.fullscreenElement || document.webkitFullscreenElement ||
+            document.mozFullScreenElement || document.msFullscreenElement);
+}
+function _anyFsActive(){ return _fakeFs || _nativeFsActive(); }
+function _applyFsIcon(){ setIcon($('iconFs'), _anyFsActive() ? 'fsExit' : 'fsEnter'); }
+function _enterFakeFs(){
+  if(_fakeFs) return;
+  _fakeFs = true;
+  stageEl.classList.add('fake-fs');
+  document.documentElement.style.overflow = 'hidden';
+  // Nudge mobile browsers to hide their address bar where possible.
+  try { window.scrollTo(0, 1); } catch(e){}
+  _applyFsIcon();
+  showToast('Fullscreen');
+  // Reflow video size (in case the element doesn't automatically fill the new stage).
+  try { window.dispatchEvent(new Event('resize')); } catch(e){}
+}
+function _exitFakeFs(){
+  if(!_fakeFs) return;
+  _fakeFs = false;
+  stageEl.classList.remove('fake-fs');
+  document.documentElement.style.overflow = '';
+  _applyFsIcon();
+  try { window.dispatchEvent(new Event('resize')); } catch(e){}
+}
 function toggleFs(){
-  if(!document.fullscreenElement && !document.webkitFullscreenElement){
-    (stageEl.requestFullscreen || stageEl.webkitRequestFullscreen).call(stageEl);
-  } else {
-    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  // Exit from any active fullscreen mode
+  if(_nativeFsActive()){
+    const exit = document.exitFullscreen || document.webkitExitFullscreen ||
+                 document.mozCancelFullScreen || document.msExitFullscreen;
+    if(typeof exit === 'function'){ try { exit.call(document); } catch(e){} }
+    if(_fakeFs) _exitFakeFs();
+    return;
   }
+  if(_fakeFs){ _exitFakeFs(); return; }
+
+  // Try the native Fullscreen API on the stage element first
+  const el = stageEl;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen ||
+              el.mozRequestFullScreen || el.msRequestFullscreen;
+  if(typeof req === 'function'){
+    try {
+      const ret = req.call(el);
+      if(ret && typeof ret.then === 'function'){
+        ret.then(_applyFsIcon).catch(()=> _enterFakeFs());
+      } else {
+        setTimeout(_applyFsIcon, 60);
+      }
+      return;
+    } catch(e){
+      _enterFakeFs();
+      return;
+    }
+  }
+
+  // No native API (iOS Safari): fall back to CSS fake fullscreen
+  _enterFakeFs();
 }
 btnFs.addEventListener('click', toggleFs);
-document.addEventListener('fullscreenchange', ()=> setIcon($('iconFs'), document.fullscreenElement ? 'fsExit' : 'fsEnter'));
+
+// Keep the icon in sync with native fullscreen events + clear fake fs
+['fullscreenchange','webkitfullscreenchange','mozfullscreenchange','MSFullscreenChange'].forEach(ev=>{
+  document.addEventListener(ev, ()=>{
+    if(!_nativeFsActive() && _fakeFs){
+      // Native fs just ended — nothing to clear, fake fs was already off if native was on
+    }
+    _applyFsIcon();
+  });
+});
+
 $('btnPip').addEventListener('click', async ()=>{
   try{
     if(document.pictureInPictureElement) await document.exitPictureInPicture();
@@ -1227,7 +1366,10 @@ document.addEventListener('keydown', e=>{
     case 'p': case 'P': $('btnPip').click(); break;
     case 'n': case 'N': if(!btnNext.classList.contains('hidden')) btnNext.click(); break;
     case 'c': case 'C': if(!btnCc.classList.contains('hidden')) btnCc.click(); break;
-    case 'Escape': closeMenus(); break;
+    case 'Escape':
+      if(_fakeFs) _exitFakeFs();
+      closeMenus();
+      break;
   }
   showControls();
 });
@@ -1457,6 +1599,16 @@ DOCS_TEMPLATE = r"""<!DOCTYPE html>
     <code>M</code> — mute &nbsp;·&nbsp; <code>F</code> — fullscreen
     &nbsp;·&nbsp; <code>P</code> — picture-in-picture<br>
     <code>Esc</code> — close settings panel
+  </p>
+
+  <h2>Mobile Gestures</h2>
+  <p>
+    <b>Single tap</b> — show controls (or play/pause when controls are already visible)<br>
+    <b>Double tap</b> — toggle fullscreen<br>
+    <b>Fullscreen</b> uses the native Fullscreen API on desktop and Android.
+    On iOS Safari (where the API isn't available on elements) the player
+    switches to a CSS-based fullscreen that keeps the custom controls and
+    Skip Intro button working.
   </p>
 
   <h2>Skip Times (AniSkip)</h2>
