@@ -433,10 +433,11 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
           object-fit:contain; }
   video::cue { background:rgba(0,0,0,.65); color:#fff; font-family:inherit; }
 
-  /* ── CSS-based fullscreen fallback (iOS Safari & others without the Fullscreen API) ── */
+  /* ── CSS-based fullscreen fallback (used only if neither the Fullscreen API
+        nor iOS native video fullscreen is available) ── */
   #stage.fake-fs {
     position:fixed !important;
-    inset:0 !important;
+    top:0 !important; left:0 !important; right:0 !important; bottom:0 !important;
     width:100vw !important;
     height:100vh !important;
     height:100dvh !important;
@@ -1019,23 +1020,19 @@ if(IS_TOUCH){
   video.addEventListener('touchend', e=>{
     const t = e.changedTouches[0];
     if(!t) return;
-    // Was this a swipe? Ignore.
     if(Math.abs(t.clientX - _tapStartX) > 15 || Math.abs(t.clientY - _tapStartY) > 15) return;
     _tapCount++;
     if(_tapCount === 1){
       _tapTimer = setTimeout(()=>{
         _tapCount = 0;
         if(anyMenuOpen()){ closeMenus(); return; }
-        // First tap when controls are hidden → reveal controls (don't toggle play)
         if(!controls.classList.contains('visible') && !video.paused){ showControls(); return; }
-        // Otherwise toggle play/pause
         togglePlay(); flashIcon(video.paused ? 'play' : 'pause');
         showControls();
       }, 260);
     } else {
       clearTimeout(_tapTimer);
       _tapCount = 0;
-      // Double-tap → fullscreen (custom handler covers iOS Safari)
       toggleFs();
     }
   }, {passive:true});
@@ -1180,31 +1177,42 @@ video.addEventListener('volumechange', updateVolIcon);
 lastVol = loadVol() || 1;
 applyVol(loadVol());
 
-/* ── fullscreen (desktop + Android + iOS Safari) ──────────────
-   Desktop & Android Chrome: use the standard Fullscreen API on #stage.
-   iOS Safari: requestFullscreen is undefined on elements, so we fall
-   back to a CSS "fake fullscreen" that keeps our custom controls
-   (including the Skip Intro button) working.
-   If the browser exposes the API but rejects the request (user
-   gesture lost, Permissions Policy, etc.) we also drop to the CSS
-   fallback instead of throwing. */
+/* ═══════════════════════════════════════════════════════════
+   FULLSCREEN  — desktop + Android + iOS Safari
+   ═══════════════════════════════════════════════════════════
+   Path 1 (Desktop / Android Chrome / iPadOS 16.4+ / iOS 16.4+):
+       stageEl.requestFullscreen()   ← custom controls preserved.
+   Path 2 (iOS Safari < 16.4 — no Element.requestFullscreen):
+       video.webkitEnterFullscreen() ← native iOS video player.
+       Must be called *synchronously* in the click handler so the
+       user gesture isn't consumed; that's why we branch on
+       typeof requestFullscreen *before* any await/promise.
+   Path 3 (last resort — WebView with neither API):
+       CSS fake fullscreen on #stage.
+   ───────────────────────────────────────────────────────── */
 let _fakeFs = false;
+let _iosFs  = false;
+
 function _nativeFsActive(){
   return !!(document.fullscreenElement || document.webkitFullscreenElement ||
-            document.mozFullScreenElement || document.msFullscreenElement);
+            document.mozFullScreenElement || document.msFullscreenElement ||
+            _iosFs);
 }
 function _anyFsActive(){ return _fakeFs || _nativeFsActive(); }
 function _applyFsIcon(){ setIcon($('iconFs'), _anyFsActive() ? 'fsExit' : 'fsEnter'); }
+
+/* iOS native video fullscreen event wiring — keeps the FS icon in sync */
+video.addEventListener('webkitbeginfullscreen', ()=>{ _iosFs = true;  _applyFsIcon(); });
+video.addEventListener('webkitendfullscreen',   ()=>{ _iosFs = false; _applyFsIcon(); });
+
 function _enterFakeFs(){
   if(_fakeFs) return;
   _fakeFs = true;
   stageEl.classList.add('fake-fs');
   document.documentElement.style.overflow = 'hidden';
-  // Nudge mobile browsers to hide their address bar where possible.
   try { window.scrollTo(0, 1); } catch(e){}
   _applyFsIcon();
   showToast('Fullscreen');
-  // Reflow video size (in case the element doesn't automatically fill the new stage).
   try { window.dispatchEvent(new Event('resize')); } catch(e){}
 }
 function _exitFakeFs(){
@@ -1215,49 +1223,88 @@ function _exitFakeFs(){
   _applyFsIcon();
   try { window.dispatchEvent(new Event('resize')); } catch(e){}
 }
+
+function _exitAnyFs(){
+  /* iOS native video fullscreen exit */
+  if(_iosFs && typeof video.webkitExitFullscreen === 'function'){
+    try { video.webkitExitFullscreen(); } catch(e){}
+    return;
+  }
+  /* Standard Fullscreen API exit */
+  const exit = document.exitFullscreen || document.webkitExitFullscreen ||
+               document.mozCancelFullScreen || document.msExitFullscreen;
+  if(typeof exit === 'function'){ try { exit.call(document); } catch(e){} }
+}
+
+function _tryIosNativeFs(){
+  if(typeof video.webkitEnterFullscreen === 'function' && !video.webkitDisplayingFullscreen){
+    try { video.webkitEnterFullscreen(); return true; } catch(e){}
+  }
+  return false;
+}
+function _fallbackFs(){
+  if(_tryIosNativeFs()) return;
+  _enterFakeFs();
+}
+
 function toggleFs(){
-  // Exit from any active fullscreen mode
-  if(_nativeFsActive()){
-    const exit = document.exitFullscreen || document.webkitExitFullscreen ||
-                 document.mozCancelFullScreen || document.msExitFullscreen;
-    if(typeof exit === 'function'){ try { exit.call(document); } catch(e){} }
+  /* ── 1. If already fullscreen in any mode, exit ── */
+  if(_nativeFsActive() || video.webkitDisplayingFullscreen){
     if(_fakeFs) _exitFakeFs();
+    _exitAnyFs();
     return;
   }
   if(_fakeFs){ _exitFakeFs(); return; }
 
-  // Try the native Fullscreen API on the stage element first
+  /* ── 2. Check synchronously whether the standard Fullscreen API exists ──
+     iOS Safari < 16.4 does NOT expose Element.requestFullscreen; in that
+     case we must fall through to video.webkitEnterFullscreen() *now*,
+     while the user gesture is still valid. Any promise path would waste
+     the gesture and the iOS call would silently no-op. */
   const el = stageEl;
   const req = el.requestFullscreen || el.webkitRequestFullscreen ||
               el.mozRequestFullScreen || el.msRequestFullscreen;
-  if(typeof req === 'function'){
-    try {
-      const ret = req.call(el);
-      if(ret && typeof ret.then === 'function'){
-        ret.then(_applyFsIcon).catch(()=> _enterFakeFs());
-      } else {
-        setTimeout(_applyFsIcon, 60);
-      }
-      return;
-    } catch(e){
-      _enterFakeFs();
-      return;
-    }
+
+  if(typeof req !== 'function'){
+    /* No Element fullscreen API at all → iOS Safari < 16.4, or a stripped
+       WebView. Go straight to native iOS video fullscreen / fake-fs. */
+    _fallbackFs();
+    return;
   }
 
-  // No native API (iOS Safari): fall back to CSS fake fullscreen
-  _enterFakeFs();
+  /* ── 3. Standard path (desktop / Android / iPadOS 16.4+ / iOS 16.4+) ── */
+  try {
+    const ret = req.call(el);
+    if(ret && typeof ret.then === 'function'){
+      ret.then(()=>{
+        /* Some WebViews silently resolve *without* actually entering
+           fullscreen. Verify and fall back if that happened. */
+        const reallyFs = !!(document.fullscreenElement ||
+                            document.webkitFullscreenElement ||
+                            document.mozFullScreenElement ||
+                            document.msFullscreenElement);
+        if(!reallyFs){
+          _fallbackFs();
+        } else {
+          _applyFsIcon();
+        }
+      }).catch(()=>{
+        /* Promise rejected (permissions, gesture lost, iframe policy) →
+           try iOS-native, then fake-fs. */
+        _fallbackFs();
+      });
+    } else {
+      setTimeout(_applyFsIcon, 60);
+    }
+  } catch(e){
+    _fallbackFs();
+  }
 }
 btnFs.addEventListener('click', toggleFs);
 
-// Keep the icon in sync with native fullscreen events + clear fake fs
+/* Keep the icon synced with the standard Fullscreen API events */
 ['fullscreenchange','webkitfullscreenchange','mozfullscreenchange','MSFullscreenChange'].forEach(ev=>{
-  document.addEventListener(ev, ()=>{
-    if(!_nativeFsActive() && _fakeFs){
-      // Native fs just ended — nothing to clear, fake fs was already off if native was on
-    }
-    _applyFsIcon();
-  });
+  document.addEventListener(ev, _applyFsIcon);
 });
 
 $('btnPip').addEventListener('click', async ()=>{
@@ -1368,6 +1415,7 @@ document.addEventListener('keydown', e=>{
     case 'c': case 'C': if(!btnCc.classList.contains('hidden')) btnCc.click(); break;
     case 'Escape':
       if(_fakeFs) _exitFakeFs();
+      if(_nativeFsActive() || video.webkitDisplayingFullscreen){ _exitAnyFs(); }
       closeMenus();
       break;
   }
@@ -1605,10 +1653,11 @@ DOCS_TEMPLATE = r"""<!DOCTYPE html>
   <p>
     <b>Single tap</b> — show controls (or play/pause when controls are already visible)<br>
     <b>Double tap</b> — toggle fullscreen<br>
-    <b>Fullscreen</b> uses the native Fullscreen API on desktop and Android.
-    On iOS Safari (where the API isn't available on elements) the player
-    switches to a CSS-based fullscreen that keeps the custom controls and
-    Skip Intro button working.
+    <b>Fullscreen</b> — uses the standard Fullscreen API on desktop, Android,
+    and iPadOS/iOS 16.4+. On older iOS Safari (no element-level Fullscreen
+    API) the player switches to the native iOS video player via
+    <code>video.webkitEnterFullscreen()</code>. Both paths genuinely fill the
+    screen — the button no longer no-ops on phones.
   </p>
 
   <h2>Skip Times (AniSkip)</h2>
