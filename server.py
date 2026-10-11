@@ -120,6 +120,7 @@ query ($id: Int) {
     id idMal
     title { romaji english native }
     synonyms episodes format
+    description
     nextAiringEpisode { episode }
   }
 }
@@ -206,7 +207,6 @@ def get_anizip_episodes(anilist_id: int) -> Optional[Dict]:
                 "length":  v.get("length") or v.get("runtime") or 0,
             })
         out.sort(key=lambda x: x["number"])
-        # dedupe (AniZip sometimes returns multiple seasons per key)
         seen = set()
         deduped = []
         for e in out:
@@ -528,7 +528,7 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
   /* ── watermark ───────────────────────────────────────────── */
   .brand {
     position:absolute; top:calc(18px + var(--sat)); right:calc(22px + var(--sar));
-    z-index:8;
+    z-index:14;
     display:flex; align-items:center; gap:9px;
     pointer-events:none; user-select:none;
     opacity:.55; transition:opacity .6s ease;
@@ -541,18 +541,6 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
   }
   .brand span { font-size:15px; font-weight:800; letter-spacing:.4px; }
   .brand span b { color:var(--accent); font-weight:800; }
-
-  /* ── top bar (title) ─────────────────────────────────────── */
-  .topbar {
-    position:absolute; left:0; right:0; top:0; z-index:9;
-    padding:calc(20px + var(--sat)) calc(150px + var(--sar)) 70px calc(24px + var(--sal));
-    background:linear-gradient(180deg, rgba(0,0,0,.75), rgba(0,0,0,.35) 55%, transparent);
-    opacity:0; transition:opacity .3s ease; pointer-events:none;
-  }
-  .topbar.visible { opacity:1; }
-  .title { font-size:18px; font-weight:700; line-height:1.25;
-           white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .subtitle { font-size:13px; color:var(--dim); margin-top:3px; font-weight:500; }
 
   /* ── loading / error overlay ─────────────────────────────── */
   .overlay {
@@ -584,7 +572,7 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
   /* ── skip button ─────────────────────────────────────────── */
   .skip-btn {
     position:absolute; right:calc(24px + var(--sar));
-    bottom:calc(112px + var(--sab)); z-index:12;
+    bottom:calc(240px + var(--sab)); z-index:12;
     display:inline-flex; align-items:center; gap:8px;
     padding:11px 18px; border-radius:10px; cursor:pointer;
     background:rgba(20,20,22,.88); color:#fff; font-size:14px; font-weight:700;
@@ -598,13 +586,12 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
                   stroke-linecap:round; stroke-linejoin:round; }
   .skip-btn.show { opacity:1; transform:none; pointer-events:auto; }
   .skip-btn:hover { background:#fff; color:#111; }
-  /* shift the skip button above the "up next" card when both are visible */
-  .skip-btn.stacked { bottom:calc(206px + var(--sab)); }
+  .skip-btn.stacked { bottom:calc(370px + var(--sab)); }
 
   /* ── up-next prompt ──────────────────────────────────────── */
   .upnext {
     position:absolute; right:calc(24px + var(--sar));
-    bottom:calc(112px + var(--sab)); z-index:13;
+    bottom:calc(240px + var(--sab)); z-index:13;
     display:flex; align-items:center; gap:12px;
     padding:10px 12px 10px 10px;
     background:var(--menu-bg);
@@ -673,12 +660,56 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
   /* ── controls ────────────────────────────────────────────── */
   .controls {
     position:absolute; left:0; right:0; bottom:0; z-index:10;
-    padding:70px calc(22px + var(--sar)) calc(14px + var(--sab)) calc(22px + var(--sal));
-    background:linear-gradient(0deg, rgba(0,0,0,.9), rgba(0,0,0,.55) 50%, transparent);
+    padding:120px calc(22px + var(--sar)) calc(14px + var(--sab)) calc(22px + var(--sal));
+    background:linear-gradient(0deg,
+      rgba(0,0,0,.94) 0%,
+      rgba(0,0,0,.78) 30%,
+      rgba(0,0,0,.42) 60%,
+      rgba(0,0,0,.08) 85%,
+      transparent 100%);
     opacity:0; transform:translateY(6px); pointer-events:none;
     transition:opacity .3s ease, transform .3s var(--ease);
   }
   .controls.visible { opacity:1; transform:none; pointer-events:auto; }
+
+  /* ── title + description block (Netflix-style) ───────────── */
+  .meta-block {
+    margin-bottom:18px;
+    max-width:calc(100vw - 520px);
+  }
+  @media (max-width:1100px){
+    .meta-block { max-width:calc(100vw - 320px); }
+  }
+  .meta-title {
+    font-size:22px; font-weight:800; line-height:1.2; letter-spacing:-.3px;
+    color:#fff; margin-bottom:4px;
+    text-shadow:0 2px 16px rgba(0,0,0,.85);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .meta-sub {
+    font-size:12.5px; font-weight:600;
+    color:rgba(255,255,255,.72); letter-spacing:.3px;
+    margin-bottom:10px;
+    text-shadow:0 1px 8px rgba(0,0,0,.85);
+  }
+  .meta-desc {
+    font-size:13.5px; line-height:1.55;
+    color:rgba(255,255,255,.78); font-weight:400;
+    text-shadow:0 1px 10px rgba(0,0,0,.8);
+    display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical;
+    overflow:hidden;
+    max-width:720px;
+    /* hidden until pause — Netflix reveal */
+    max-height:0;
+    opacity:0;
+    transition:max-height .35s var(--ease), opacity .3s ease, margin-top .3s ease;
+    margin-top:0;
+  }
+  #stage.paused .meta-desc {
+    max-height:140px;
+    opacity:1;
+    margin-top:2px;
+  }
 
   .seek-row { display:flex; align-items:center; gap:18px; margin-bottom:4px; }
   .progress-wrap {
@@ -963,10 +994,12 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
 
   /* ── mobile ──────────────────────────────────────────────── */
   @media (max-width:700px) {
-    .controls { padding:60px calc(10px + var(--sar)) calc(8px + var(--sab)) calc(10px + var(--sal)); }
-    .topbar { padding:calc(14px + var(--sat)) calc(110px + var(--sar)) 56px calc(14px + var(--sal)); }
-    .title { font-size:15px; }
-    .subtitle { font-size:12px; }
+    .controls { padding:100px calc(10px + var(--sar)) calc(8px + var(--sab)) calc(10px + var(--sal)); }
+    .meta-block { margin-bottom:14px; max-width:100%; }
+    .meta-title { font-size:17px; margin-bottom:3px; }
+    .meta-sub { font-size:11px; margin-bottom:7px; }
+    .meta-desc { font-size:12px; -webkit-line-clamp:2; max-width:none; }
+    #stage.paused .meta-desc { max-height:100px; }
     .brand { top:calc(12px + var(--sat)); right:calc(14px + var(--sar)); }
     .brand img { width:22px; height:22px; }
     .brand span { font-size:13px; }
@@ -975,8 +1008,8 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
     .ctrl { min-width:38px; height:40px; padding:0 6px; }
     .ctrl svg { width:22px; height:22px; }
     .ctrl.play svg { width:26px; height:26px; }
-    .skip-btn { right:calc(14px + var(--sar)); bottom:calc(100px + var(--sab)); padding:9px 14px; font-size:13px; }
-    .skip-btn.stacked { bottom:calc(190px + var(--sab)); }
+    .skip-btn { right:calc(14px + var(--sar)); bottom:calc(200px + var(--sab)); padding:9px 14px; font-size:13px; }
+    .skip-btn.stacked { bottom:calc(320px + var(--sab)); }
     .vol-slider-wrap { display:none; }
     .toast { bottom:calc(104px + var(--sab)); }
     #btnPip { display:none; }
@@ -995,7 +1028,7 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
     .upnext {
       right:calc(10px + var(--sar));
       left:calc(10px + var(--sal));
-      bottom:calc(100px + var(--sab));
+      bottom:calc(200px + var(--sab));
       max-width:none;
     }
     .un-thumb { width:80px; }
@@ -1013,11 +1046,6 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
 <body>
 <div id="stage">
   <video id="video" playsinline webkit-playsinline x5-playsinline crossorigin="anonymous"></video>
-
-  <div class="topbar" id="topbar">
-    <div class="title" id="title">Loading…</div>
-    <div class="subtitle" id="subtitle"></div>
-  </div>
 
   <div class="brand" id="brand">
     <img src="https://media1.tenor.com/m/fSskkWtbhHIAAAAC/delta-eminence-in-shadow.gif" alt="">
@@ -1102,6 +1130,13 @@ PLAYER_TEMPLATE = r"""<!DOCTYPE html>
   </aside>
 
   <div class="controls" id="controls">
+    <!-- Netflix-style title + description block -->
+    <div class="meta-block" id="metaBlock">
+      <div class="meta-title" id="metaTitle">Loading…</div>
+      <div class="meta-sub" id="metaSub"></div>
+      <div class="meta-desc" id="metaDesc"></div>
+    </div>
+
     <div class="seek-row">
       <div class="progress-wrap" id="progressWrap">
         <div class="progress-bg" id="progressBg">
@@ -1170,7 +1205,7 @@ const START_AT   = (function(){
 
 const $ = id => document.getElementById(id);
 const video = $('video'), stageEl = $('stage'), overlay = $('overlay'), overlayMsg = $('overlayMsg');
-const controls = $('controls'), topbar = $('topbar'), brandEl = $('brand');
+const controls = $('controls'), brandEl = $('brand');
 const progressW = $('progressWrap'), pFill = $('progressFill'), pBuf = $('progressBuffer');
 const pThumb = $('progressThumb'), timeTip = $('timeTip'), segLayer = $('segLayer');
 const curTime = $('curTime'), durTime = $('durTime');
@@ -1182,6 +1217,7 @@ const sidePanel = $('sidePanel'), spBody = $('spBody'), spSub = $('spSub');
 const panelBackdrop = $('panelBackdrop');
 const upnext = $('upnext'), unThumb = $('unThumb'), unPlaceholder = $('unPlaceholder');
 const unTitle = $('unTitle'), unMeta = $('unMeta'), unPlay = $('unPlay'), unClose = $('unClose');
+const metaTitle = $('metaTitle'), metaSub = $('metaSub'), metaDesc = $('metaDesc');
 
 const IS_TOUCH = (function(){
   return (window.matchMedia && window.matchMedia('(hover:none) and (pointer:coarse)').matches)
@@ -1206,7 +1242,7 @@ setIcon($('iconPlay'), 'play'); setIcon($('iconVol'), 'volHigh'); setIcon($('ico
 
 let hls = null, hideTimer = null, dragging = false, subTracks = [], toastTimer = null;
 let skipSegments = [], activeSkip = null;
-let totalEps = 0, animeTitle = '';
+let totalEps = 0, animeTitle = '', animeDesc = '';
 
 function fmt(s){
   if(!isFinite(s) || s < 0) s = 0; s = Math.floor(s);
@@ -1220,6 +1256,20 @@ function showToast(msg){
   toastTimer = setTimeout(()=>toastEl.classList.remove('show'), 1400);
 }
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function stripHtml(s){
+  if(!s) return '';
+  return String(s)
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 function go(ep, lang, t){
   let u = '/embed/' + ANILIST_ID + '/' + ep + '/' + lang;
@@ -1238,8 +1288,15 @@ $('errOther').onclick = ()=> go(EPISODE, OTHER, 0);
 
 /* ── title / meta ── */
 function paintTitle(){
-  $('title').textContent = animeTitle || 'ThyAnime';
-  $('subtitle').textContent = 'Episode ' + EPISODE + (totalEps ? ' of ' + totalEps : '') + '  ·  ' + LANG.toUpperCase();
+  metaTitle.textContent = animeTitle || 'ThyAnime';
+  metaSub.textContent = 'Episode ' + EPISODE + (totalEps ? ' of ' + totalEps : '') + '  ·  ' + LANG.toUpperCase();
+  if(animeDesc){
+    metaDesc.textContent = animeDesc;
+    metaDesc.style.display = '';
+  } else {
+    metaDesc.textContent = '';
+    metaDesc.style.display = 'none';
+  }
   document.title = (animeTitle ? animeTitle + ' — ' : '') + 'Episode ' + EPISODE;
 }
 $('audioTag').textContent = LANG.toUpperCase();
@@ -1252,6 +1309,7 @@ async function loadMeta(){
     const m = await r.json();
     const t = m.title || {};
     animeTitle = t.english || t.romaji || t.native || '';
+    animeDesc  = stripHtml(m.description || '');
     totalEps = m.episodes || (m.nextAiringEpisode && m.nextAiringEpisode.episode ? m.nextAiringEpisode.episode - 1 : 0) || 0;
     paintTitle();
     if(totalEps >= 2){
@@ -1267,13 +1325,13 @@ async function loadMeta(){
 /* ── controls visibility ── */
 function anyMenuOpen(){ return !!document.querySelector('.menu.open') || sidePanel.classList.contains('open'); }
 function showControls(){
-  controls.classList.add('visible'); topbar.classList.add('visible');
+  controls.classList.add('visible');
   brandEl.classList.remove('idle'); stageEl.classList.remove('cursor-hidden');
   clearTimeout(hideTimer); hideTimer = setTimeout(hideControls, 3000);
 }
 function hideControls(){
   if(video.paused || anyMenuOpen() || dragging) return;
-  controls.classList.remove('visible'); topbar.classList.remove('visible');
+  controls.classList.remove('visible');
   brandEl.classList.add('idle'); stageEl.classList.add('cursor-hidden');
 }
 
@@ -1335,7 +1393,6 @@ function buildEpisodeCard(ep){
   const card = document.createElement('div');
   card.className = 'ep-card' + (ep.number === EPISODE ? ' active' : '');
 
-  /* thumb */
   const thumb = document.createElement('div');
   thumb.className = 'ep-thumb';
 
@@ -1362,7 +1419,6 @@ function buildEpisodeCard(ep){
     thumb.appendChild(dot);
   }
 
-  /* info */
   const info = document.createElement('div');
   info.className = 'ep-info';
 
@@ -1390,7 +1446,6 @@ function renderEpisodeList(){
   spBody.innerHTML = '';
   const list = (epData && epData.episodes) ? epData.episodes.slice() : [];
 
-  /* Fall back to numbered entries when AniZip has nothing */
   if(!list.length){
     const max = totalEps > 0 ? totalEps : EPISODE;
     if(max < 1){
@@ -1402,7 +1457,6 @@ function renderEpisodeList(){
     }
   }
 
-  /* If AniList says there are more episodes than AniZip returned, top it up. */
   if(totalEps > 0 && list.length < totalEps){
     const have = new Set(list.map(e => e.number));
     for(let n = 1; n <= totalEps; n++){
@@ -1415,7 +1469,6 @@ function renderEpisodeList(){
   list.forEach(ep => frag.appendChild(buildEpisodeCard(ep)));
   spBody.appendChild(frag);
 
-  /* Update header subtitle with count */
   const count = Math.max(list.length, totalEps);
   spSub.textContent = (animeTitle ? animeTitle + '  ·  ' : '') + count + ' episode' + (count === 1 ? '' : 's');
 }
@@ -1483,9 +1536,7 @@ btnNext.addEventListener('click', ()=>{
 
 /* ══════════════════════════════════════════════════════════
    UP-NEXT PROMPT
-   Appears ~8 seconds before the end of the episode. Offers to
-   jump straight to the next episode (same audio language).
-   Dismissible per-episode.
+   Appears ~8 seconds before the end of the episode.
    ══════════════════════════════════════════════════════════ */
 const UPNEXT_SECONDS = 8;
 let upnextShown = false;
@@ -1503,7 +1554,6 @@ function _findNextEpInfo(){
 }
 
 function _applyUpnextContent(info){
-  /* thumbnail */
   unThumb.style.backgroundImage = '';
   unPlaceholder.style.display = '';
   unPlaceholder.textContent = String(info.number);
@@ -1511,7 +1561,6 @@ function _applyUpnextContent(info){
     unThumb.style.backgroundImage =
       'url("' + String(info.image).replace(/"/g, '\\"') + '")';
   }
-  /* title line: "Episode N · Title" or just "Episode N" */
   unTitle.textContent = info.title
     ? ('Episode ' + info.number + ' · ' + info.title)
     : ('Episode ' + info.number);
@@ -1530,7 +1579,6 @@ function _updateUpnextMeta(){
 }
 
 function _syncSkipStack(){
-  /* Move the skip button above the up-next card if both visible */
   if(upnext.classList.contains('show') && skipBtn.classList.contains('show')){
     skipBtn.classList.add('stacked');
   } else {
@@ -1549,8 +1597,6 @@ function showUpnext(){
   upnext.classList.add('show');
   upnextShown = true;
 
-  /* If AniZip data hasn't loaded yet, kick off a background fetch so the
-     thumbnail / title get filled in shortly after. */
   if(!epData){
     loadEpisodeList().then(()=>{
       if(!upnextShown) return;
@@ -1580,7 +1626,6 @@ function checkUpnext(){
     if(!upnextShown) showUpnext();
     else _updateUpnextMeta();
   } else if(upnextShown){
-    /* user seeked back past the threshold — retract */
     hideUpnext();
   }
 }
@@ -1644,12 +1689,15 @@ if(IS_TOUCH){
   video.addEventListener('dblclick', ()=>{ clearTimeout(clickTimer); toggleFs(); });
 }
 
-video.addEventListener('play',  ()=>{ syncPlayIcon(); showControls(); });
-video.addEventListener('pause', ()=>{ syncPlayIcon(); showControls(); });
+video.addEventListener('play',  ()=>{
+  syncPlayIcon(); stageEl.classList.remove('paused'); showControls();
+});
+video.addEventListener('pause', ()=>{
+  syncPlayIcon(); stageEl.classList.add('paused'); showControls();
+});
 video.addEventListener('playing', syncPlayIcon);
 video.addEventListener('ended', ()=>{
   syncPlayIcon();
-  /* keep the up-next card visible on the last frame so the user can still click Play */
   if(!upnextDismissed && totalEps > 0 && EPISODE < totalEps && !upnextShown){
     showUpnext();
   }
@@ -2004,7 +2052,7 @@ stageEl.addEventListener('mousemove', activity);
 stageEl.addEventListener('touchstart', activity, {passive:true});
 stageEl.addEventListener('mouseleave', ()=>{
   if(!video.paused && !anyMenuOpen()){
-    controls.classList.remove('visible'); topbar.classList.remove('visible');
+    controls.classList.remove('visible');
     brandEl.classList.add('idle'); stageEl.classList.add('cursor-hidden');
   }
 });
@@ -2138,9 +2186,10 @@ DOCS_TEMPLATE = r"""<!DOCTYPE html>
     <p class="desc">Self-contained HLS player with custom controls
       (quality, speed, volume, PiP, fullscreen, subtitles), an
       auto-detected skip-intro/outro button, a slide-in episode
-      drawer with thumbnails + synopses (via AniZip), and an
-      <b>Up Next</b> prompt that appears 8 seconds before the end of
-      the episode. Use as an iframe <code>src</code>.</p>
+      drawer with thumbnails + synopses, a Netflix-style title +
+      description block above the seek bar that reveals the synopsis
+      when paused, and an <b>Up Next</b> prompt 8 seconds before the
+      end. Use as an iframe <code>src</code>.</p>
     <pre>GET /embed/21/1/sub</pre>
   </div>
 
@@ -2162,9 +2211,7 @@ DOCS_TEMPLATE = r"""<!DOCTYPE html>
       <span class="path">/api/episodes/&lt;anilist_id&gt;</span></div>
     <p class="desc">Episode metadata for the player's side drawer and
       the Up Next card: title, synopsis, and 16:9 thumbnail. Sourced from
-      AniZip (<code>api.ani.zip</code>), which maps AniList IDs to
-      TVDB-backed episode records. Cached 1 hour. Returns an empty
-      <code>episodes</code> array if AniZip has no data for the title.</p>
+      AniZip (<code>api.ani.zip</code>). Cached 1 hour.</p>
     <pre>{
   <span class="k">"episodes"</span>: [
     {
@@ -2184,8 +2231,7 @@ DOCS_TEMPLATE = r"""<!DOCTYPE html>
       <span class="path">/api/skip/&lt;anilist_id&gt;/&lt;episode&gt;?length=&lt;seconds&gt;</span></div>
     <p class="desc">Returns AniSkip intro/outro/recap timestamps. The
       <code>length</code> query param (episode runtime in seconds) is
-      <b>required</b> by AniSkip v2. The server resolves the AniList ID to a
-      MAL ID, then queries <code>api.aniskip.com/v2</code>. Cached 1 hour.</p>
+      <b>required</b> by AniSkip v2. Cached 1 hour.</p>
     <pre>{
   <span class="k">"found"</span>: <span class="s">true</span>,
   <span class="k">"results"</span>: [
@@ -2202,7 +2248,8 @@ DOCS_TEMPLATE = r"""<!DOCTYPE html>
   <div class="ep">
     <div class="ep-head"><span class="method get">GET</span>
       <span class="path">/api/anime/&lt;anilist_id&gt;</span></div>
-    <p class="desc">Raw AniList metadata for the given ID.</p>
+    <p class="desc">Raw AniList metadata for the given ID, including the
+      <code>description</code> field used by the player's title block.</p>
     <pre>GET /api/anime/21</pre>
   </div>
 
@@ -2252,39 +2299,40 @@ DOCS_TEMPLATE = r"""<!DOCTYPE html>
     <b>Single tap</b> — show controls (or play/pause when controls are already visible)<br>
     <b>Double tap</b> — toggle fullscreen<br>
     <b>Fullscreen</b> — uses the standard Fullscreen API on desktop, Android,
-    and iPadOS/iOS 16.4+. On older iOS Safari (no element-level Fullscreen
-    API) the player switches to the native iOS video player via
-    <code>video.webkitEnterFullscreen()</code>.
+    and iPadOS/iOS 16.4+. On older iOS Safari the player falls back to the
+    native iOS video player.
+  </p>
+
+  <h2>Title + Description Block (Netflix-style)</h2>
+  <p>
+    The title and episode info now sit <b>above the seek bar</b> inside
+    the controls gradient. When you <b>pause</b>, the anime's synopsis
+    fades in below the title, giving a Netflix-style "here's what you're
+    watching" reveal. When playing, only the title + episode info show,
+    so the seek bar stays clean during hover.
   </p>
 
   <h2>Episodes Drawer</h2>
   <p>
     Tapping the grid button opens a right-side drawer listing every episode
     with a thumbnail, title, and synopsis. Clicking an entry loads that
-    episode immediately while preserving the current audio language. The
-    drawer is full-width on phones and 420&nbsp;px wide on desktop; a
-    semi-transparent backdrop closes it, as does <code>Esc</code>.
+    episode immediately while preserving the current audio language.
   </p>
 
   <h2>Up Next Prompt</h2>
   <p>
-    When the current episode reaches its final 8 seconds, an
-    <b>Up Next</b> card fades in at the bottom-right of the player showing
-    the next episode's thumbnail, number, and title. Clicking
-    <b>Play</b> jumps straight to the next episode (keeping the current
-    audio language); clicking <b>×</b> dismisses the prompt for the rest of
-    the episode. The card is suppressed on the last episode of a season.
+    When the current episode reaches its final 8 seconds, an <b>Up Next</b>
+    card fades in at the bottom-right of the player showing the next
+    episode's thumbnail, number, and title. Clicking <b>Play</b> jumps
+    straight to the next episode; clicking <b>×</b> dismisses the prompt
+    for the rest of the episode.
   </p>
 
   <h2>Skip Times (AniSkip)</h2>
   <p>
     The player automatically fetches intro/outro/recap timestamps from
     <a href="https://api.aniskip.com/api-docs" style="color:#c4a8ff">AniSkip</a>
-    once the video's runtime is known. When you reach an intro, outro, or
-    recap segment, a <b>Skip</b> button fades in on the right side of the
-    player. Clicking it seeks to the end of the segment. If an outro is
-    overlapping the last 8 seconds, the skip button stacks above the
-    Up Next card so both stay clickable.
+    once the video's runtime is known.
   </p>
 
   <footer>ThyAnime · built on MegaPlay + AniList + AniSkip + AniZip · powered by hls.js</footer>
@@ -2410,7 +2458,6 @@ class Handler(BaseHTTPRequestHandler):
         print(f"  \033[90m│\033[0m  anizip  anilist=\033[33m{aid}\033[0m")
         data = get_anizip_episodes(aid)
         if not data:
-            # still return a well-formed shape so the client can fall back
             data = {"episodes": []}
         cache_set(key, data, ttl=3600)
         print(f"  \033[90m│\033[0m  anizip  \033[32mOK\033[0m  {len(data['episodes'])} episodes")
